@@ -1,6 +1,7 @@
 """ASGI lifespan checks that require no external services."""
 
 import asyncio
+import json
 import unittest
 
 from asyncdjango.asgi import ASGIApplication, DatabaseLifespan, JSONResponse, StreamingResponse
@@ -179,3 +180,78 @@ class HTTPPipelineTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(call, 2)
         self.assertTrue(cancelled.is_set())
         self.assertEqual([item.get("body") for item in sent[1:]], [b"first"])
+
+    async def test_streamed_request_reaches_handler_before_body_complete(self) -> None:
+        app = ASGIApplication(FakeDatabase())
+        first_seen = asyncio.Event()
+        inbox = asyncio.Queue()
+        sent = []
+
+        async def view(request):
+            chunks = []
+            async for chunk in request.stream():
+                chunks.append(chunk.decode())
+                first_seen.set()
+            return JSONResponse({"chunks": chunks})
+
+        async def send(message):
+            sent.append(message)
+
+        app.add_route("/upload", view, methods=("POST",), stream_request=True)
+        inbox.put_nowait({"type": "http.request", "body": b"first", "more_body": True})
+        call = asyncio.create_task(app(
+            {"type": "http", "method": "POST", "path": "/upload"}, inbox.get, send
+        ))
+        await asyncio.wait_for(first_seen.wait(), 2)
+        self.assertEqual(sent, [])
+        inbox.put_nowait({"type": "http.request", "body": b"second", "more_body": False})
+        await asyncio.wait_for(call, 2)
+        self.assertEqual(sent[0]["status"], 200)
+        self.assertEqual(json.loads(sent[1]["body"]), {"chunks": ["first", "second"]})
+
+    async def test_streamed_request_body_limit_even_when_handler_ignores_body(self) -> None:
+        app = ASGIApplication(FakeDatabase(), max_body_size=3)
+        inbox = asyncio.Queue()
+        sent = []
+
+        async def view(request):
+            return JSONResponse({"accepted": True})
+
+        async def send(message):
+            sent.append(message)
+
+        app.add_route("/upload", view, methods=("POST",), stream_request=True)
+        inbox.put_nowait({"type": "http.request", "body": b"abcd"})
+        await asyncio.wait_for(app(
+            {"type": "http", "method": "POST", "path": "/upload"}, inbox.get, send
+        ), 2)
+        self.assertEqual(sent[0]["status"], 413)
+
+    async def test_disconnect_cancels_streamed_request(self) -> None:
+        app = ASGIApplication(FakeDatabase())
+        first_seen = asyncio.Event()
+        cancelled = asyncio.Event()
+        inbox = asyncio.Queue()
+        sent = []
+
+        async def view(request):
+            try:
+                async for _ in request.stream():
+                    first_seen.set()
+            finally:
+                cancelled.set()
+            return JSONResponse({"ok": True})
+
+        async def send(message):
+            sent.append(message)
+
+        app.add_route("/upload", view, methods=("POST",), stream_request=True)
+        inbox.put_nowait({"type": "http.request", "body": b"first", "more_body": True})
+        call = asyncio.create_task(app(
+            {"type": "http", "method": "POST", "path": "/upload"}, inbox.get, send
+        ))
+        await asyncio.wait_for(first_seen.wait(), 2)
+        inbox.put_nowait({"type": "http.disconnect"})
+        await asyncio.wait_for(call, 2)
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(sent, [])

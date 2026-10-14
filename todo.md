@@ -35,7 +35,7 @@
 
 - [x] Async JSON request/response and static/dynamic routing with startup/shutdown lifecycle.
 - [x] Cancel an in-flight handler and database transaction on client disconnect.
-- [ ] Add an async middleware pipeline and streaming request/response bodies.
+- [x] Add an async middleware pipeline and streaming request/response bodies.
 - [x] Initial DRF-style `APIView`, router, and `ModelViewSet` with `async def` handlers.
 - [x] Initial model serializer field validation and async writes.
 - [x] Async uniqueness and foreign-key existence validators.

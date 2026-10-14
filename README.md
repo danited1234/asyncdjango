@@ -70,3 +70,17 @@ Run tests after the editable install with `.venv\Scripts\python -m unittest disc
 ## Compatibility policy
 
 Aim to keep Django and DRF application syntax for models, query expressions, serializers, routers, and viewsets. Document every incompatible behavior rather than silently falling back to a thread. Start with PostgreSQL; add other databases only after the PostgreSQL execution path is complete.
+
+## Streaming HTTP bodies
+
+For an upload endpoint that should process chunks before the entire body has
+arrived, register the route with `stream_request=True` and iterate over
+`request.stream()` in the async handler. The stream is single-use. The default
+route mode continues to buffer up to `max_body_size` bytes and exposes
+`request.body` as bytes. Streaming routes enforce the same limit while data
+arrives; `request.body` is `None` until `await request.json()` consumes it.
+
+`StreamingResponse(async_iterable)` writes each bytes chunk directly to ASGI
+`send`. Disconnects cancel the active handler or response stream. Async
+middleware registered with `add_middleware()` wraps matching handlers in
+registration order, with the first middleware outermost.
