@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from itertools import count
 from typing import Any, AsyncIterator, Protocol
 
+from .postgres import TransactionConnection
+from .transaction import current_database
+
 
 _creation_order = count()
 _UNSET = object()
@@ -122,11 +125,13 @@ class QuerySet:
         conditions: tuple[Q, ...] = (),
         ordering: tuple[str, ...] = (),
         database: DatabaseClient | None = None,
+        for_update: bool = False,
     ) -> None:
         self.model = model
         self._conditions = conditions
         self._ordering = ordering
         self._database = database
+        self._for_update = for_update
 
     def all(self) -> QuerySet:
         return self._clone()
@@ -138,6 +143,7 @@ class QuerySet:
             self._conditions if conditions is None else conditions,
             self._ordering if ordering is None else ordering,
             self._database,
+            self._for_update,
         )
 
     def using(self, database: DatabaseClient) -> QuerySet:
@@ -146,10 +152,18 @@ class QuerySet:
         clone._database = database
         return clone
 
+    def select_for_update(self) -> QuerySet:
+        clone = self._clone()
+        clone._for_update = True
+        return clone
+
     def _require_database(self) -> DatabaseClient:
-        if self._database is None:
+        database = self._database or current_database()
+        if database is None:
             raise RuntimeError("Bind a database with .using(database) before I/O")
-        return self._database
+        if self._for_update and not isinstance(database, TransactionConnection):
+            raise RuntimeError("select_for_update requires transaction.atomic()")
+        return database
 
     def filter(self, *conditions: Q, **lookups: Any) -> QuerySet:
         if any(not isinstance(condition, Q) for condition in conditions):
@@ -218,7 +232,7 @@ class QuerySet:
         joined = f" {condition.connector} ".join(fragments)
         return f"NOT ({joined})" if condition.negated else f"({joined})"
 
-    def compile(self) -> tuple[str, tuple[Any, ...]]:
+    def compile(self, *, limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
         """Return SQL and parameters without making a database call."""
         fields = self.model._meta.fields.values()
         columns = ", ".join(_quote(field.column) for field in fields)
@@ -235,13 +249,19 @@ class QuerySet:
                 field = self.model._meta.fields[name[1:] if descending else name]
                 order.append(_quote(field.column) + (" DESC" if descending else " ASC"))
             sql += " ORDER BY " + ", ".join(order)
+        if limit is not None:
+            if limit < 1:
+                raise ValueError("limit must be positive")
+            sql += f" LIMIT {limit}"
+        if self._for_update:
+            sql += " FOR UPDATE"
         return sql, tuple(params)
 
     def _model_from_row(self, row: Any) -> Model:
         values = {name: row[field.column]
                   for name, field in self.model._meta.fields.items()}
         instance = self.model(**values)
-        instance._database = self._database
+        instance._database = self._database or current_database()
         return instance
 
     async def fetch_all(self) -> list[Model]:
@@ -259,8 +279,8 @@ class QuerySet:
 
     async def get(self, *conditions: Q, **lookups: Any) -> Model:
         query = self.filter(*conditions, **lookups)
-        sql, params = query.compile()
-        rows = await query._require_database().fetch(sql + " LIMIT 2", *params)
+        sql, params = query.compile(limit=2)
+        rows = await query._require_database().fetch(sql, *params)
         if not rows:
             raise self.model.DoesNotExist(
                 f"{self.model.__name__} matching query does not exist"
@@ -408,9 +428,10 @@ class Model(metaclass=ModelBase):
         return self
 
     async def save(self) -> None:
-        if self._database is None:
+        database = self._database or current_database()
+        if database is None:
             raise RuntimeError("Bind a database with .using(database) before I/O")
-        query = type(self).objects.using(self._database)
+        query = type(self).objects.using(database)
         if self.pk is None:
             created = await query.create(**{
                 name: getattr(self, name)

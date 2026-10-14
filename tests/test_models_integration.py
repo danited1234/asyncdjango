@@ -75,3 +75,20 @@ class ModelIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await users.using(transaction).create(email="kept@example.com")
         saved = await users.using(self.database).fetch_all()
         self.assertEqual([user.email for user in saved], ["kept@example.com"])
+
+    async def test_atomic_and_select_for_update(self) -> None:
+        from asyncdjango.db import transaction, using_database
+
+        with using_database(self.database):
+            created = await self.User.objects.create(email="locked@example.com")
+            with self.assertRaisesRegex(RuntimeError, "requires transaction"):
+                await self.User.objects.select_for_update().get(pk=created.pk)
+            async with transaction.atomic():
+                user = await self.User.objects.select_for_update().get(pk=created.pk)
+                user.age = 30
+                await user.save()
+                async with transaction.atomic() as nested:
+                    await self.User.objects.filter(pk=created.pk).update(age=31)
+                    nested.set_rollback()
+                self.assertEqual((await self.User.objects.get(pk=created.pk)).age, 30)
+            self.assertEqual((await self.User.objects.get(pk=created.pk)).age, 30)

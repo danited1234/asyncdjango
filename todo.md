@@ -25,15 +25,18 @@
 - [x] Async iteration with bounded cursor prefetch; verify memory usage on a 50,000-row result set.
 - [ ] Foreign keys and `select_related`; define explicit lazy relation loading.
 - [ ] Unique constraints, defaults, validation boundaries, and database error mapping.
-- [ ] `async with transaction.atomic()` with nested savepoints and `select_for_update`.
-- [ ] Migration generation and application for the supported model subset.
+- [x] `async with transaction.atomic()` with nested savepoints and `select_for_update` (initial PostgreSQL implementation).
+- [x] Generate and apply tracked initial CREATE TABLE migrations for the supported field subset.
+- [ ] Generate ALTER/DROP migrations for changes to existing models.
 
 ## 2. ASGI and REST vertical slice
 
-- [ ] Async request/response and routing with startup/shutdown lifecycle.
-- [ ] Async middleware pipeline and client disconnect cancellation.
-- [ ] DRF-style `APIView`, routers, and `ModelViewSet` with `async def` handlers.
-- [ ] Serializer fields and validation; async database-backed validation and writes.
+- [x] Async JSON request/response and static/dynamic routing with startup/shutdown lifecycle.
+- [x] Cancel an in-flight handler and database transaction on client disconnect.
+- [ ] Add an async middleware pipeline and streaming request/response bodies.
+- [x] Initial DRF-style `APIView`, router, and `ModelViewSet` with `async def` handlers.
+- [x] Initial model serializer field validation and async writes.
+- [ ] Async database-backed serializer validators and full DRF serializer compatibility.
 - [ ] Authentication, permissions, pagination, filtering, and throttling.
 - [ ] OpenAPI schema generation and test client.
 

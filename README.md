@@ -6,7 +6,7 @@ The central rule is that request-time I/O must await an async driver directly. T
 
 ## Current scope
 
-The first code is a PostgreSQL foundation built on `asyncpg`. It has an async connection pool, transactions, Django-style model declarations, lazy SQL construction, and an initial native async CRUD API. Migrations and the REST API are still to come.
+The first code is a PostgreSQL foundation built on `asyncpg`. It has an async connection pool, transactions, Django-style model declarations, lazy SQL construction, and an initial native async CRUD API. Initial table migrations, a JSON ASGI router, serializers, and model viewsets are implemented. The broader Django/DRF feature set is still in progress.
 
 The ASGI `DatabaseLifespan` wrapper opens and closes the pool at application startup and shutdown. A transaction yields a task-owned connection; use its methods inside that transaction. Nested transaction blocks create PostgreSQL savepoints. `set_rollback()` rolls back the current transaction level when its block exits.
 
@@ -41,7 +41,7 @@ finally:
     await database.close()
 ```
 
-The table must already exist for now. Normal query construction is lazy; `get`, `fetch_all`, writes, and async iteration perform I/O. A transaction connection can be passed to `.using(transaction)` to keep its queries inside the transaction.
+Normal query construction is lazy; `get`, `fetch_all`, writes, and async iteration perform I/O. A transaction connection can be passed to `.using(transaction)` to keep its queries inside the transaction. An initial migration can create the table with `initial_migration("0001_initial", [User])` and `await apply_migration(database, migration)`. Later schema changes are not generated yet.
 
 ## API direction
 
