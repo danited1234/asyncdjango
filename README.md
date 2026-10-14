@@ -93,3 +93,19 @@ request/response shapes; ad hoc routes receive basic path and response entries.
 `AsyncTestClient(app)` drives ASGI lifespan startup/shutdown and lets tests use
 `await client.get(...)`, `await client.post(..., json_data=...)`, or
 `await client.request(..., body=async_chunks)` without an HTTP server.
+
+## REST access policies and query controls
+
+`APIView` and `ModelViewSet` accept DRF-style `authentication_classes`,
+`permission_classes`, and `throttle_classes`. Authentication and object
+permission hooks are awaited directly. `TokenAuthentication` parses the
+`Authorization: Token ...` header; applications subclass its
+`authenticate_credentials()` with their own native async credential lookup.
+No default token store is bundled. Keep tokens out of logs and require HTTPS.
+
+`SimpleRateThrottle` enforces an exact sliding window within one process.
+It is **not** a distributed or durable rate limiter; production deployments
+with multiple workers need a shared atomic backend before relying on it for
+abuse protection. `ExactFilterBackend` only accepts named `filterset_fields`,
+`OrderingFilter` only accepts named `ordering_fields`, and
+`PageNumberPagination` uses awaited count and sliced PostgreSQL queries.

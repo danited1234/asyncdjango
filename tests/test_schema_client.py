@@ -6,6 +6,8 @@ import unittest
 from asyncdjango.asgi import ASGIApplication, JSONResponse, StreamingResponse
 from asyncdjango.db import models
 from asyncdjango.rest import ModelViewSet, Router
+from asyncdjango.filters import ExactFilterBackend
+from asyncdjango.pagination import PageNumberPagination
 from asyncdjango.schema import generate_openapi
 from asyncdjango.serializers import ModelSerializer
 from asyncdjango.testclient import AsyncTestClient
@@ -25,6 +27,12 @@ class ProductSerializer(ModelSerializer):
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
+
+
+class PagedProducts(ProductViewSet):
+    filter_backends = (ExactFilterBackend,)
+    filterset_fields = ("active",)
+    pagination_class = PageNumberPagination
 
 
 class FakeDatabase:
@@ -55,6 +63,15 @@ class SchemaTests(unittest.TestCase):
         fields = schema["components"]["schemas"]["ProductSerializer"]["properties"]
         self.assertEqual(fields["name"], {"type": "string", "maxLength": 30})
         self.assertEqual(fields["active"], {"type": "boolean"})
+
+    def test_paginated_list_schema_matches_response_shape(self):
+        app = ASGIApplication(FakeDatabase())
+        Router(app).register("products", PagedProducts)
+        operation = generate_openapi(app)["paths"]["/products"]["get"]
+        response = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(response["properties"]["results"]["type"], "array")
+        self.assertEqual({param["name"] for param in operation["parameters"]},
+                         {"active", "page", "page_size"})
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):

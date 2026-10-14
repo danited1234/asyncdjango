@@ -34,6 +34,7 @@ def generate_openapi(application: ASGIApplication, *, title: str = "Asyncdjango 
     """Describe registered routes; model viewsets include field-level schemas."""
     paths: dict[str, dict[str, Any]] = {}
     schemas: dict[str, dict[str, Any]] = {}
+    security_schemes: dict[str, dict[str, Any]] = {}
     for method, path, _, handler, _ in application._routes:
         action = getattr(handler, "__asyncdjango_action__", None)
         viewset = getattr(handler, "__asyncdjango_viewset__", None)
@@ -59,6 +60,34 @@ def generate_openapi(application: ASGIApplication, *, title: str = "Asyncdjango 
                 operation["parameters"][0]["schema"] = _field_schema(
                     model._meta.fields[model._meta.pk_name]
                 )
+            if viewset.authentication_classes:
+                operation["security"] = []
+                for authentication_class in viewset.authentication_classes:
+                    scheme_name = authentication_class.__name__
+                    keyword = getattr(authentication_class, "keyword", b"Token")
+                    security_schemes[scheme_name] = {
+                        "type": "apiKey", "in": "header", "name": "Authorization",
+                        "description": f"Use {keyword.decode()} followed by a space and credential",
+                    }
+                    operation["security"].append({scheme_name: []})
+            if action == "list":
+                for name in getattr(viewset, "filterset_fields", ()):
+                    operation.setdefault("parameters", []).append({
+                        "name": name, "in": "query", "required": False,
+                        "schema": _field_schema(model._meta.fields[name]),
+                    })
+                if getattr(viewset, "ordering_fields", ()):
+                    operation.setdefault("parameters", []).append({
+                        "name": "ordering", "in": "query", "required": False,
+                        "schema": {"type": "string"},
+                    })
+                if viewset.pagination_class is not None:
+                    operation.setdefault("parameters", []).extend([
+                        {"name": "page", "in": "query", "required": False,
+                         "schema": {"type": "integer", "minimum": 1}},
+                        {"name": "page_size", "in": "query", "required": False,
+                         "schema": {"type": "integer", "minimum": 1}},
+                    ])
             if action in ("create", "update"):
                 write_properties = {name: schema for name, schema in properties.items()
                                     if not isinstance(model._meta.fields[name], AutoField)}
@@ -72,6 +101,16 @@ def generate_openapi(application: ASGIApplication, *, title: str = "Asyncdjango 
                 operation["responses"] = {"204": {"description": "Deleted"}}
             else:
                 response_schema = {"type": "array", "items": reference} if action == "list" else reference
+                if action == "list" and viewset.pagination_class is not None:
+                    response_schema = {
+                        "type": "object", "required": ["count", "next", "previous", "results"],
+                        "properties": {
+                            "count": {"type": "integer"},
+                            "next": {"type": ["string", "null"]},
+                            "previous": {"type": ["string", "null"]},
+                            "results": {"type": "array", "items": reference},
+                        },
+                    }
                 status = "201" if action == "create" else "200"
                 operation["responses"] = {status: {
                     "description": "Success",
@@ -79,4 +118,5 @@ def generate_openapi(application: ASGIApplication, *, title: str = "Asyncdjango 
                 }}
         paths.setdefault(path, {})[method.lower()] = operation
     return {"openapi": "3.1.0", "info": {"title": title, "version": version},
-            "paths": paths, "components": {"schemas": schemas}}
+            "paths": paths, "components": {"schemas": schemas,
+                                           "securitySchemes": security_schemes}}

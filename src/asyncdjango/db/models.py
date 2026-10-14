@@ -169,6 +169,8 @@ class QuerySet:
         database: DatabaseClient | None = None,
         for_update: bool = False,
         related: tuple[str, ...] = (),
+        low_mark: int = 0,
+        high_mark: int | None = None,
     ) -> None:
         self.model = model
         self._conditions = conditions
@@ -176,6 +178,8 @@ class QuerySet:
         self._database = database
         self._for_update = for_update
         self._related = related
+        self._low_mark = low_mark
+        self._high_mark = high_mark
 
     def all(self) -> QuerySet:
         return self._clone()
@@ -189,7 +193,26 @@ class QuerySet:
             self._database,
             self._for_update,
             self._related,
+            self._low_mark,
+            self._high_mark,
         )
+
+    def __getitem__(self, key: slice) -> QuerySet:
+        if not isinstance(key, slice) or key.step is not None:
+            raise TypeError("QuerySet supports only contiguous slices")
+        start = 0 if key.start is None else key.start
+        stop = key.stop
+        if not isinstance(start, int) or isinstance(start, bool) or start < 0:
+            raise ValueError("Slice start must be a nonnegative integer")
+        if stop is not None and (not isinstance(stop, int) or isinstance(stop, bool)
+                                 or stop < start):
+            raise ValueError("Slice stop must be at least the start")
+        clone = self._clone()
+        clone._low_mark = self._low_mark + start
+        clone._high_mark = (self._low_mark + stop if stop is not None else self._high_mark)
+        if self._high_mark is not None:
+            clone._high_mark = min(clone._high_mark, self._high_mark) if clone._high_mark is not None else self._high_mark
+        return clone
 
     def using(self, database: DatabaseClient) -> QuerySet:
         """Bind this query to a pool or an active transaction connection."""
@@ -335,10 +358,15 @@ class QuerySet:
                           _quote(field.column))
                 order.append(column + (" DESC" if descending else " ASC"))
             sql += " ORDER BY " + ", ".join(order)
-        if limit is not None:
-            if limit < 1:
-                raise ValueError("limit must be positive")
-            sql += f" LIMIT {limit}"
+        effective_limit = limit if limit is not None else (
+            None if self._high_mark is None else max(0, self._high_mark - self._low_mark)
+        )
+        if effective_limit is not None:
+            if effective_limit < 0:
+                raise ValueError("limit must be nonnegative")
+            sql += f" LIMIT {effective_limit}"
+        if self._low_mark:
+            sql += f" OFFSET {self._low_mark}"
         if self._for_update:
             sql += " FOR UPDATE"
         return sql, tuple(params)

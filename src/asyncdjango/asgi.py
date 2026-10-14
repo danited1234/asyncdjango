@@ -55,6 +55,10 @@ class DatabaseLifespan:
                 return
 
 
+class AnonymousUser:
+    is_authenticated = False
+
+
 class Request:
     def __init__(self, scope: dict[str, Any], body: bytes | None,
                  path_params: dict[str, str] | None = None,
@@ -66,6 +70,17 @@ class Request:
         self.method = scope["method"]
         self.path = scope["path"]
         self.path_params = path_params or {}
+        self.user: Any = AnonymousUser()
+        self.auth: Any = None
+
+    @property
+    def query_params(self) -> dict[str, str]:
+        from urllib.parse import parse_qs
+
+        raw = self.scope.get("query_string", b"")
+        return {key: values[-1] for key, values in parse_qs(
+            raw.decode("utf-8"), keep_blank_values=True
+        ).items()}
 
     async def json(self) -> Any:
         """Decode a buffered body, or consume a streamed body once."""
@@ -89,8 +104,10 @@ class Request:
 
 
 class JSONResponse:
-    def __init__(self, data: Any, status_code: int = 200) -> None:
+    def __init__(self, data: Any, status_code: int = 200,
+                 headers: list[tuple[bytes, bytes]] | None = None) -> None:
         self.status_code = status_code
+        self.headers = headers or []
         self.body = (b"" if status_code == 204 else
                      json.dumps(data, separators=(",", ":")).encode("utf-8"))
 
@@ -98,8 +115,8 @@ class JSONResponse:
         await send({
             "type": "http.response.start",
             "status": self.status_code,
-            "headers": ([] if self.status_code == 204 else
-                        [(b"content-type", b"application/json")]),
+            "headers": (([] if self.status_code == 204 else
+                         [(b"content-type", b"application/json")]) + self.headers),
         })
         await send({"type": "http.response.body", "body": self.body})
 

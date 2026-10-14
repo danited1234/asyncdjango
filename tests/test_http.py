@@ -10,6 +10,9 @@ from asyncdjango.asgi import ASGIApplication, JSONResponse
 from asyncdjango.db import models
 from asyncdjango.serializers import ModelSerializer
 from asyncdjango.rest import ModelViewSet, Router
+from asyncdjango.filters import ExactFilterBackend, OrderingFilter
+from asyncdjango.pagination import PageNumberPagination
+from asyncdjango.permissions import BasePermission
 
 
 class User(models.Model):
@@ -29,6 +32,27 @@ class UserSerializer(ModelSerializer):
 class UserViewSet(ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
+
+
+class SmallPages(PageNumberPagination):
+    page_size = 2
+    max_page_size = 3
+
+
+class PagedUserViewSet(UserViewSet):
+    filter_backends = (ExactFilterBackend, OrderingFilter)
+    filterset_fields = ("age",)
+    ordering_fields = ("id", "age")
+    pagination_class = SmallPages
+
+
+class YoungOnlyObjectPermission(BasePermission):
+    async def has_object_permission(self, request, view, obj):
+        return obj.age != 30
+
+
+class RestrictedUserViewSet(UserViewSet):
+    permission_classes = (YoungOnlyObjectPermission,)
 
 
 class SerializerTests(unittest.TestCase):
@@ -103,7 +127,7 @@ class HTTPIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.database.close()
 
-    async def _call_http(self, app, method, path, body=b""):
+    async def _call_http(self, app, method, path, body=b"", query_string=b""):
         inbox = asyncio.Queue()
         inbox.put_nowait({"type": "http.request", "body": body})
         sent = []
@@ -111,7 +135,8 @@ class HTTPIntegrationTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             sent.append(message)
 
-        await app({"type": "http", "method": method, "path": path},
+        await app({"type": "http", "method": method, "path": path,
+                   "query_string": query_string},
                   inbox.get, send)
         return sent
 
@@ -183,6 +208,46 @@ class HTTPIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(sorted([first[0]["status"], second[0]["status"]]),
                          [201, 400])
+        self.assertEqual(await User.objects.using(self.database).count(), 1)
+
+    async def test_allowlisted_filter_order_and_page(self) -> None:
+        for index, age in enumerate((20, 30, 20, 30, 20)):
+            await User.objects.using(self.database).create(
+                email=f"page{index}@example.com", age=age
+            )
+        app = ASGIApplication(self.database)
+        Router(app).register("users", PagedUserViewSet)
+        first = await self._call_http(
+            app, "GET", "/users", query_string=b"age=20&ordering=-id&page=1"
+        )
+        payload = json.loads(first[1]["body"])
+        self.assertEqual(first[0]["status"], 200)
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual([row["email"] for row in payload["results"]],
+                         ["page4@example.com", "page2@example.com"])
+        self.assertIn("page=2", payload["next"])
+        second = await self._call_http(
+            app, "GET", "/users", query_string=b"age=20&ordering=-id&page=2"
+        )
+        self.assertEqual(json.loads(second[1]["body"])["results"][0]["email"],
+                         "page0@example.com")
+        bad = await self._call_http(app, "GET", "/users",
+                                    query_string=b"ordering=email")
+        self.assertEqual(bad[0]["status"], 400)
+        bad_page = await self._call_http(app, "GET", "/users",
+                                         query_string=b"page_size=1000")
+        self.assertEqual(bad_page[0]["status"], 400)
+
+    async def test_object_permissions_apply_to_detail_writes(self) -> None:
+        user = await User.objects.using(self.database).create(
+            email="restricted@example.com", age=30
+        )
+        app = ASGIApplication(self.database)
+        Router(app).register("users", RestrictedUserViewSet)
+        for method, body in (("GET", b""), ("PATCH", b'{"age":20}'),
+                             ("DELETE", b"")):
+            sent = await self._call_http(app, method, f"/users/{user.pk}", body)
+            self.assertEqual(sent[0]["status"], 403)
         self.assertEqual(await User.objects.using(self.database).count(), 1)
 
     async def test_disconnect_cancels_database_transaction(self) -> None:

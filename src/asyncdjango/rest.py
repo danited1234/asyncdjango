@@ -6,16 +6,81 @@ import json
 from typing import Any
 
 from .asgi import ASGIApplication, JSONResponse, Request
+from .authentication import AuthenticationFailed, BaseAuthentication
 from .db.models import IntegerField, Model, QuerySet
+from .filters import BaseFilterBackend, FilterError
+from .pagination import PageNumberPagination, PaginationError
+from .permissions import AllowAny, BasePermission
 from .serializers import ModelSerializer, ValidationError
+from .throttling import BaseThrottle
+
+
+class PermissionDenied(Exception):
+    pass
 
 
 class APIView:
-    async def dispatch(self, request: Request) -> JSONResponse:
-        method = getattr(self, request.method.lower(), None)
+    authentication_classes: tuple[type[BaseAuthentication], ...] = ()
+    permission_classes: tuple[type[BasePermission], ...] = (AllowAny,)
+    throttle_classes: tuple[type[BaseThrottle], ...] = ()
+
+    def get_authenticators(self) -> list[BaseAuthentication]:
+        return [cls() for cls in self.authentication_classes]
+
+    def get_permissions(self) -> list[BasePermission]:
+        return [cls() for cls in self.permission_classes]
+
+    def get_throttles(self) -> list[BaseThrottle]:
+        return [cls() for cls in self.throttle_classes]
+
+    async def check_object_permissions(self, request: Request, obj: Any) -> None:
+        for permission in self.get_permissions():
+            if not await permission.has_object_permission(request, self, obj):
+                raise PermissionDenied
+
+    async def _initial(self, request: Request) -> JSONResponse | None:
+        authenticators = self.get_authenticators()
+        auth_headers = []
+        if authenticators and hasattr(authenticators[0], "keyword"):
+            auth_headers = [(b"www-authenticate", authenticators[0].keyword)]
+        try:
+            for authenticator in authenticators:
+                result = await authenticator.authenticate(request)
+                if result is not None:
+                    request.user, request.auth = result
+                    break
+        except AuthenticationFailed as exc:
+            return JSONResponse({"detail": str(exc)}, 401, auth_headers)
+        for permission in self.get_permissions():
+            if not await permission.has_permission(request, self):
+                status = 401 if self.authentication_classes and not getattr(
+                    request.user, "is_authenticated", False
+                ) else 403
+                return JSONResponse({"detail": "Permission denied"}, status,
+                                    auth_headers if status == 401 else None)
+        for throttle in self.get_throttles():
+            if not await throttle.allow_request(request, self):
+                wait = throttle.retry_after() if hasattr(throttle, "retry_after") else None
+                headers = [(b"retry-after", str(wait).encode())] if wait is not None else []
+                return JSONResponse({"detail": "Request was throttled"}, 429, headers)
+        return None
+
+    async def dispatch_action(self, request: Request, action: str) -> JSONResponse:
+        rejected = await self._initial(request)
+        if rejected is not None:
+            return rejected
+        method = getattr(self, action, None)
         if method is None:
             return JSONResponse({"detail": "Method not allowed"}, 405)
-        return await method(request)
+        try:
+            return await method(request)
+        except PermissionDenied:
+            return JSONResponse({"detail": "Permission denied"}, 403)
+        except (FilterError, PaginationError) as exc:
+            return JSONResponse({"detail": str(exc)}, 400)
+
+    async def dispatch(self, request: Request) -> JSONResponse:
+        return await self.dispatch_action(request, request.method.lower())
 
     @classmethod
     def as_view(cls):
@@ -24,12 +89,19 @@ class APIView:
         return view
 
 
-class ModelViewSet:
+class ModelViewSet(APIView):
     queryset: QuerySet
     serializer_class: type[ModelSerializer]
+    filter_backends: tuple[type[BaseFilterBackend], ...] = ()
+    pagination_class: type[PageNumberPagination] | None = None
 
     def get_queryset(self) -> QuerySet:
         return self.queryset.all()
+
+    def filter_queryset(self, request: Request, queryset: QuerySet) -> QuerySet:
+        for backend_class in self.filter_backends:
+            queryset = backend_class().filter_queryset(request, queryset, self)
+        return queryset
 
     def _pk(self, request: Request) -> Any:
         raw = request.path_params["pk"]
@@ -43,15 +115,23 @@ class ModelViewSet:
         return raw
 
     async def list(self, request: Request) -> JSONResponse:
-        objects = await self.get_queryset().fetch_all()
+        query = self.filter_queryset(request, self.get_queryset())
+        if self.pagination_class is not None:
+            paginator = self.pagination_class()
+            objects = await paginator.paginate_queryset(query, request)
+            return paginator.get_paginated_response(
+                self.serializer_class(objects, many=True).data
+            )
+        objects = await query.fetch_all()
         return JSONResponse(self.serializer_class(objects, many=True).data)
 
     async def retrieve(self, request: Request) -> JSONResponse:
-        query = self.get_queryset()
+        query = self.filter_queryset(request, self.get_queryset())
         try:
             instance = await query.get(pk=self._pk(request))
         except query.model.DoesNotExist:
             return JSONResponse({"detail": "Not found"}, 404)
+        await self.check_object_permissions(request, instance)
         return JSONResponse(self.serializer_class(instance).data)
 
     async def create(self, request: Request) -> JSONResponse:
@@ -69,11 +149,12 @@ class ModelViewSet:
         return JSONResponse(serializer.data, 201)
 
     async def update(self, request: Request) -> JSONResponse:
-        query = self.get_queryset()
+        query = self.filter_queryset(request, self.get_queryset())
         try:
             instance = await query.get(pk=self._pk(request))
         except query.model.DoesNotExist:
             return JSONResponse({"detail": "Not found"}, 404)
+        await self.check_object_permissions(request, instance)
         try:
             payload = await request.json()
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -88,9 +169,13 @@ class ModelViewSet:
         return JSONResponse(serializer.data)
 
     async def destroy(self, request: Request) -> JSONResponse:
-        count = await self.get_queryset().filter(pk=self._pk(request)).delete()
-        if not count:
+        query = self.filter_queryset(request, self.get_queryset())
+        try:
+            instance = await query.get(pk=self._pk(request))
+        except query.model.DoesNotExist:
             return JSONResponse({"detail": "Not found"}, 404)
+        await self.check_object_permissions(request, instance)
+        await query.filter(pk=instance.pk).delete()
         return JSONResponse({}, 204)
 
 
@@ -105,7 +190,9 @@ class Router:
 
         def handler(action: str):
             async def view(request: Request) -> JSONResponse:
-                return await getattr(viewset(), action)(request)
+                instance = viewset()
+                instance.action = action
+                return await instance.dispatch_action(request, action)
             view.__asyncdjango_viewset__ = viewset
             view.__asyncdjango_action__ = action
             return view
