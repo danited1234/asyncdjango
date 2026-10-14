@@ -70,6 +70,43 @@ class CharField(Field):
         super().__init__(**kwargs)
 
 
+class UnloadedRelationError(RuntimeError):
+    """Raised when a relationship would otherwise trigger implicit I/O."""
+
+
+class ForeignKey(Field):
+    def __init__(self, to: type[Model], *, on_delete: str = "CASCADE",
+                 **kwargs: Any) -> None:
+        if on_delete not in {"CASCADE", "RESTRICT", "SET NULL"}:
+            raise ValueError("Unsupported on_delete action")
+        if on_delete == "SET NULL" and not kwargs.get("null", False):
+            raise ValueError("SET NULL requires null=True")
+        self.to = to
+        self.on_delete = on_delete
+        super().__init__(**kwargs)
+
+    @property
+    def column(self) -> str:
+        return self.db_column or f"{self.name}_id"
+
+    def __get__(self, instance: Model | None, owner: type[Model]) -> Model | None | ForeignKey:
+        if instance is None:
+            return self
+        if self.name not in instance._related_cache:
+            raise UnloadedRelationError(
+                f"{self.name} is not loaded; use select_related({self.name!r})"
+            )
+        return instance._related_cache[self.name]
+
+    def __set__(self, instance: Model, value: Model | None) -> None:
+        if value is not None and not isinstance(value, self.to):
+            raise TypeError(f"{self.name} requires {self.to.__name__} or None")
+        if value is not None and value.pk is None:
+            raise ValueError("Save a related object before assigning it")
+        setattr(instance, f"{self.name}_id", None if value is None else value.pk)
+        instance._related_cache[self.name] = value
+
+
 @dataclass(frozen=True)
 class ModelOptions:
     db_table: str
@@ -126,12 +163,14 @@ class QuerySet:
         ordering: tuple[str, ...] = (),
         database: DatabaseClient | None = None,
         for_update: bool = False,
+        related: tuple[str, ...] = (),
     ) -> None:
         self.model = model
         self._conditions = conditions
         self._ordering = ordering
         self._database = database
         self._for_update = for_update
+        self._related = related
 
     def all(self) -> QuerySet:
         return self._clone()
@@ -144,6 +183,7 @@ class QuerySet:
             self._ordering if ordering is None else ordering,
             self._database,
             self._for_update,
+            self._related,
         )
 
     def using(self, database: DatabaseClient) -> QuerySet:
@@ -155,6 +195,14 @@ class QuerySet:
     def select_for_update(self) -> QuerySet:
         clone = self._clone()
         clone._for_update = True
+        return clone
+
+    def select_related(self, *names: str) -> QuerySet:
+        for name in names:
+            if not isinstance(self.model._meta.fields.get(name), ForeignKey):
+                raise ValueError(f"Not a foreign key field: {name}")
+        clone = self._clone()
+        clone._related = tuple(dict.fromkeys((*self._related, *names)))
         return clone
 
     def _require_database(self) -> DatabaseClient:
@@ -188,11 +236,18 @@ class QuerySet:
         if len(bits) > 2:
             raise ValueError(f"Related or nested lookup is not supported: {lookup}")
         field_name = self.model._meta.pk_name if bits[0] == "pk" else bits[0]
+        if field_name.endswith("_id") and field_name[:-3] in self.model._meta.fields:
+            candidate = self.model._meta.fields[field_name[:-3]]
+            if isinstance(candidate, ForeignKey):
+                field_name = field_name[:-3]
         field = self.model._meta.fields.get(field_name)
         if field is None:
             raise ValueError(f"Unknown model field: {bits[0]}")
         operation = bits[1] if len(bits) == 2 else "exact"
-        column = _quote(field.column)
+        column = (f'"t0".{_quote(field.column)}' if self._related else
+                  _quote(field.column))
+        if isinstance(field, ForeignKey) and isinstance(value, Model):
+            value = value.pk
         if operation == "isnull":
             if not isinstance(value, bool):
                 raise TypeError("isnull requires a bool")
@@ -202,7 +257,8 @@ class QuerySet:
         if operation == "in":
             if isinstance(value, (str, bytes)):
                 raise TypeError("in lookup requires an iterable of values")
-            values = list(value)
+            values = [item.pk if isinstance(field, ForeignKey)
+                      and isinstance(item, Model) else item for item in value]
             if not values:
                 return "FALSE"
             placeholders = []
@@ -235,8 +291,31 @@ class QuerySet:
     def compile(self, *, limit: int | None = None) -> tuple[str, tuple[Any, ...]]:
         """Return SQL and parameters without making a database call."""
         fields = self.model._meta.fields.values()
-        columns = ", ".join(_quote(field.column) for field in fields)
-        sql = f"SELECT {columns} FROM {_quote(self.model._meta.db_table)}"
+        if self._related:
+            columns = [f'"t0".{_quote(field.column)} AS {_quote(field.column)}'
+                       for field in fields]
+            joins = []
+            for index, name in enumerate(self._related, 1):
+                foreign_key = self.model._meta.fields[name]
+                target = foreign_key.to
+                alias = f"t{index}"
+                target_pk = target._meta.fields[target._meta.pk_name]
+                joins.append(
+                    f'LEFT JOIN {_quote(target._meta.db_table)} AS {_quote(alias)} '
+                    f'ON "t0".{_quote(foreign_key.column)} = '
+                    f'{_quote(alias)}.{_quote(target_pk.column)}'
+                )
+                columns.extend(
+                    f'{_quote(alias)}.{_quote(field.column)} AS '
+                    f'{_quote(name + "__" + field.column)}'
+                    for field in target._meta.fields.values()
+                )
+            sql = (f"SELECT {', '.join(columns)} FROM "
+                   f"{_quote(self.model._meta.db_table)} AS \"t0\" "
+                   + " ".join(joins))
+        else:
+            columns = ", ".join(_quote(field.column) for field in fields)
+            sql = f"SELECT {columns} FROM {_quote(self.model._meta.db_table)}"
         params: list[Any] = []
         where = [self._compile_q(condition, params) for condition in self._conditions]
         where = [fragment for fragment in where if fragment]
@@ -247,7 +326,9 @@ class QuerySet:
             for name in self._ordering:
                 descending = name.startswith("-")
                 field = self.model._meta.fields[name[1:] if descending else name]
-                order.append(_quote(field.column) + (" DESC" if descending else " ASC"))
+                column = (f'"t0".{_quote(field.column)}' if self._related else
+                          _quote(field.column))
+                order.append(column + (" DESC" if descending else " ASC"))
             sql += " ORDER BY " + ", ".join(order)
         if limit is not None:
             if limit < 1:
@@ -262,6 +343,17 @@ class QuerySet:
                   for name, field in self.model._meta.fields.items()}
         instance = self.model(**values)
         instance._database = self._database or current_database()
+        for name in self._related:
+            foreign_key = self.model._meta.fields[name]
+            target = foreign_key.to
+            values = {field_name: row[f"{name}__{field.column}"]
+                      for field_name, field in target._meta.fields.items()}
+            if values[target._meta.pk_name] is None:
+                setattr(instance, name, None)
+            else:
+                related = target(**values)
+                related._database = instance._database
+                setattr(instance, name, related)
         return instance
 
     async def fetch_all(self) -> list[Model]:
@@ -325,7 +417,7 @@ class QuerySet:
         else:
             sql = (f"INSERT INTO {_quote(self.model._meta.db_table)} "
                    f"DEFAULT VALUES RETURNING {returning}")
-        params = [getattr(instance, field.name) for field in fields]
+        params = [_field_value(instance, field) for field in fields]
         rows = await self._require_database().fetch(sql, *params)
         if len(rows) != 1:
             raise RuntimeError("INSERT did not return one row")
@@ -334,14 +426,20 @@ class QuerySet:
     async def update(self, **values: Any) -> int:
         if not values:
             return 0
+        fields = {}
         for name in values:
-            if name not in self.model._meta.fields:
+            field_name = name[:-3] if name.endswith("_id") and isinstance(
+                self.model._meta.fields.get(name[:-3]), ForeignKey
+            ) else name
+            if field_name not in self.model._meta.fields:
                 raise ValueError(f"Unknown model field: {name}")
-            if self.model._meta.fields[name].primary_key:
+            if self.model._meta.fields[field_name].primary_key:
                 raise ValueError("Updating the primary key is not supported")
-        params = list(values.values())
+            fields[name] = self.model._meta.fields[field_name]
+        params = [value.pk if isinstance(value, Model) else value
+                  for value in values.values()]
         assignments = ", ".join(
-            f"{_quote(self.model._meta.fields[name].column)} = ${index}"
+            f"{_quote(fields[name].column)} = ${index}"
             for index, name in enumerate(values, 1)
         )
         sql = (f"UPDATE {_quote(self.model._meta.db_table)} SET {assignments}"
@@ -361,6 +459,11 @@ class _ManagerDescriptor:
         if instance is not None:
             raise AttributeError("objects is available on the model class")
         return QuerySet(owner)
+
+
+def _field_value(instance: Model, field: Field) -> Any:
+    return (getattr(instance, f"{field.name}_id") if isinstance(field, ForeignKey)
+            else getattr(instance, field.name))
 
 
 class ModelBase(type):
@@ -403,10 +506,27 @@ class Model(metaclass=ModelBase):
 
     def __init__(self, **values: Any) -> None:
         self._database: DatabaseClient | None = None
-        unknown = values.keys() - self._meta.fields.keys()
+        self._related_cache: dict[str, Model | None] = {}
+        allowed = set(self._meta.fields)
+        allowed.update(f"{name}_id" for name, field in self._meta.fields.items()
+                       if isinstance(field, ForeignKey))
+        unknown = values.keys() - allowed
         if unknown:
             raise TypeError(f"Unknown model fields: {', '.join(sorted(unknown))}")
         for name, field in self._meta.fields.items():
+            id_name = f"{name}_id"
+            if isinstance(field, ForeignKey):
+                if name in values and id_name in values:
+                    raise TypeError(f"Specify either {name} or {id_name}")
+                if name in values and isinstance(values[name], Model):
+                    setattr(self, name, values[name])
+                    continue
+                value = values[name] if name in values else values.get(id_name, None)
+                if value is not None:
+                    setattr(self, id_name, value)
+                else:
+                    setattr(self, name, None)
+                continue
             if name in values:
                 value = values[name]
             elif field.default is _UNSET:
@@ -434,13 +554,13 @@ class Model(metaclass=ModelBase):
         query = type(self).objects.using(database)
         if self.pk is None:
             created = await query.create(**{
-                name: getattr(self, name)
+                name: _field_value(self, self._meta.fields[name])
                 for name in self._meta.fields if name != self._meta.pk_name
             })
             for name in self._meta.fields:
                 setattr(self, name, getattr(created, name))
         else:
             await query.filter(**{self._meta.pk_name: self.pk}).update(**{
-                name: getattr(self, name)
+                name: _field_value(self, self._meta.fields[name])
                 for name in self._meta.fields if name != self._meta.pk_name
             })

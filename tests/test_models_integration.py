@@ -92,3 +92,50 @@ class ModelIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     nested.set_rollback()
                 self.assertEqual((await self.User.objects.get(pk=created.pk)).age, 30)
             self.assertEqual((await self.User.objects.get(pk=created.pk)).age, 30)
+
+    async def test_foreign_key_and_select_related(self) -> None:
+        from asyncdjango.db import models
+        from asyncdjango.db.migrations import apply_migration, initial_migration
+
+        class Organization(models.Model):
+            name = models.CharField(max_length=50)
+
+            class Meta:
+                db_table = "asyncdjango_test_organizations"
+
+        class Employee(models.Model):
+            organization = models.ForeignKey(Organization, on_delete="CASCADE")
+            name = models.CharField(max_length=50)
+
+            class Meta:
+                db_table = "asyncdjango_test_employees"
+
+        migration = initial_migration("test_0003_relationships", [Employee, Organization])
+        await apply_migration(self.database, migration)
+        try:
+            organization = await Organization.objects.using(self.database).create(
+                name="Acme"
+            )
+            employee = await Employee.objects.using(self.database).create(
+                organization=organization, name="Alex"
+            )
+            plain = await Employee.objects.using(self.database).get(pk=employee.pk)
+            self.assertEqual(plain.organization_id, organization.pk)
+            with self.assertRaises(models.UnloadedRelationError):
+                _ = plain.organization
+            selected = await (Employee.objects.using(self.database)
+                              .select_related("organization")
+                              .get(organization_id=organization.pk))
+            self.assertEqual(selected.organization.name, "Acme")
+            self.assertEqual(selected.organization.pk, organization.pk)
+            await Organization.objects.using(self.database).filter(
+                pk=organization.pk
+            ).delete()
+            self.assertEqual(await Employee.objects.using(self.database).count(), 0)
+        finally:
+            await self.database.execute('DROP TABLE IF EXISTS "asyncdjango_test_employees"')
+            await self.database.execute('DROP TABLE IF EXISTS "asyncdjango_test_organizations"')
+            await self.database.execute(
+                'DELETE FROM "_asyncdjango_migrations" WHERE "name" = $1',
+                migration.name,
+            )

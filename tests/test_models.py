@@ -70,3 +70,23 @@ class ModelTests(unittest.TestCase):
             class BadModel(models.Model):
                 first = models.IntegerField(db_column="duplicate")
                 second = models.IntegerField(db_column="duplicate")
+
+    def test_foreign_key_column_and_relation_contract(self) -> None:
+        class Organization(models.Model):
+            name = models.CharField(max_length=50)
+
+        class Employee(models.Model):
+            organization = models.ForeignKey(Organization)
+
+        employee = Employee(organization_id=3)
+        self.assertEqual(employee.organization_id, 3)
+        with self.assertRaises(models.UnloadedRelationError):
+            _ = employee.organization
+        organization = Organization(id=3, name="Acme")
+        employee.organization = organization
+        self.assertIs(employee.organization, organization)
+        sql, params = Employee.objects.filter(organization_id=3).compile()
+        self.assertIn('"organization_id" = $1', sql)
+        self.assertEqual(params, (3,))
+        with self.assertRaisesRegex(ValueError, "Not a foreign key"):
+            Employee.objects.select_related("id")

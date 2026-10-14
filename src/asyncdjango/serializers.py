@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from .db.models import (
-    AutoField, BooleanField, CharField, DateTimeField, IntegerField,
+    AutoField, BooleanField, CharField, DateTimeField, ForeignKey, IntegerField,
     Model, _UNSET,
 )
 
@@ -48,7 +48,9 @@ class ModelSerializer:
     def _represent(self, instance: Model) -> dict[str, Any]:
         result = {}
         for name in self.Meta.fields:
-            value = getattr(instance, name)
+            field = instance._meta.fields.get(name)
+            value = (getattr(instance, f"{name}_id") if isinstance(field, ForeignKey)
+                     else getattr(instance, name))
             result[name] = value.isoformat() if isinstance(value, datetime) else value
         return result
 
@@ -101,6 +103,16 @@ class ModelSerializer:
                         raise ValueError
                 except ValueError:
                     self.errors[name] = "Expected an ISO 8601 datetime"
+            elif isinstance(field, ForeignKey):
+                target_pk = field.to._meta.fields[field.to._meta.pk_name]
+                if isinstance(target_pk, IntegerField):
+                    valid = isinstance(value, int) and not isinstance(value, bool)
+                else:
+                    valid = isinstance(value, str)
+                if not valid:
+                    self.errors[name] = "Expected a related primary key"
+                else:
+                    values[name] = value
         self.validated_data = values if not self.errors else None
         if self.errors and raise_exception:
             raise ValidationError(self.errors)

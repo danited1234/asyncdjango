@@ -23,7 +23,8 @@
 - [x] Lazy queryset construction with `filter`, `exclude`, `Q`, `order_by`, and SQL parameters (initial lookup subset).
 - [x] Native awaited `get`, `fetch_all`, `count`, `exists`, `create`, `update`, `delete`, and model `save` (initial PostgreSQL subset).
 - [x] Async iteration with bounded cursor prefetch; verify memory usage on a 50,000-row result set.
-- [ ] Foreign keys and `select_related`; define explicit lazy relation loading.
+- [x] Single-level foreign keys and `select_related`; reject implicit lazy relation I/O.
+- [ ] Reverse relations, many-to-many fields, and multi-level `select_related`.
 - [ ] Unique constraints, defaults, validation boundaries, and database error mapping.
 - [x] `async with transaction.atomic()` with nested savepoints and `select_for_update` (initial PostgreSQL implementation).
 - [x] Generate and apply tracked initial CREATE TABLE migrations for the supported field subset.
