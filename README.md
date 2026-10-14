@@ -135,3 +135,9 @@ loaded, but, as in DRF, writes require explicit `async def create()` and
 the operation in a native async transaction so a failed nested write rolls
 back all rows. The default methods reject nested writes rather than guessing
 whether to create, replace, clear, or delete related data.
+
+## ADRF endpoint port
+
+`examples/ported_health.py` ports the CRM app's small ADRF health endpoint.
+`docs/porting-health.md` lists every source change and the remaining schema
+difference. The original CRM checkout was only inspected, not changed.

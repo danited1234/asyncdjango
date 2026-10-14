@@ -19,6 +19,19 @@ class PermissionDenied(Exception):
     pass
 
 
+class Response(JSONResponse):
+    """DRF-style JSON response spelling for the current renderer subset."""
+
+    def __init__(self, data: Any = None, status: int | None = None,
+                 headers: dict[str, str] | None = None) -> None:
+        encoded_headers = [
+            (name.lower().encode("ascii"), value.encode("utf-8"))
+            for name, value in (headers or {}).items()
+        ]
+        super().__init__(data, status_code=200 if status is None else status,
+                         headers=encoded_headers)
+
+
 class APIView:
     authentication_classes: tuple[type[BaseAuthentication], ...] = ()
     permission_classes: tuple[type[BasePermission], ...] = (AllowAny,)
@@ -86,6 +99,7 @@ class APIView:
     def as_view(cls):
         async def view(request: Request) -> JSONResponse:
             return await cls().dispatch(request)
+        view.__asyncdjango_view_class__ = cls
         return view
 
 

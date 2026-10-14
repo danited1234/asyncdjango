@@ -45,7 +45,7 @@
 
 ## 3. Compatibility and release
 
-- [ ] Port one small existing Django/ADRF endpoint and record every source change.
+- [x] Port one small existing Django/ADRF endpoint and record every source change (CRM GET /api/health/; see `docs/porting-health.md`).
 - [ ] Compare correctness and concurrency against Django/ADRF and a native async baseline under the same PostgreSQL workload.
 - [x] Add a source guard against thread offloading and an event-loop blocking detector for tests.
 - [ ] Document configuration, migrations, deployment, security, and supported Python/PostgreSQL versions.

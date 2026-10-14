@@ -42,6 +42,9 @@ def generate_openapi(application: ASGIApplication, *, title: str = "Asyncdjango 
             "operationId": f"{method.lower()}_{re.sub('[^a-zA-Z0-9]+', '_', path).strip('_')}",
             "responses": {"200": {"description": "Success"}},
         }
+        view_class = getattr(handler, "__asyncdjango_view_class__", None)
+        if view_class is not None and getattr(view_class, "schema_tags", None):
+            operation["tags"] = list(view_class.schema_tags)
         parameter_names = re.findall(r"\{([a-zA-Z_]\w*)\}", path)
         if parameter_names:
             operation["parameters"] = [
