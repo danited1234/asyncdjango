@@ -14,6 +14,10 @@ Single-level foreign keys are supported. Use `select_related("organization")` to
 The initial serializer checks field types synchronously and checks unique and foreign-key values with awaited database queries. Database unique constraints still enforce correctness if concurrent requests race.
 The test suite scans the source for thread-offload calls and includes `EventLoopBlockDetector` to flag a stalled event loop during focused development tests.
 
+Initial and column-alteration migrations are documented in
+[`docs/migrations.md`](docs/migrations.md). Review generated SQL before applying
+destructive changes.
+
 ## Try the database spike
 
 Use Python 3.11+ and a PostgreSQL database you can connect to:

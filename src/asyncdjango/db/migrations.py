@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 from typing import Iterable
 
 from .models import (
     AutoField, BooleanField, CharField, DateTimeField, Field, ForeignKey, IntegerField,
-    Model, _quote,
+    Model, _UNSET, _quote,
 )
 from .postgres import AsyncPostgres
 
@@ -23,7 +24,54 @@ class Migration:
         return sha256("\n".join(self.statements).encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class SQLExpression:
+    """Small allowlist of server-evaluated SQL defaults."""
+
+    sql: str
+
+    def __post_init__(self) -> None:
+        if self.sql not in {"CURRENT_TIMESTAMP", "NOW()"}:
+            raise ValueError("Unsupported SQL default expression")
+
+
+def _default_sql(field: Field) -> str | None:
+    value = field.db_default
+    if value is _UNSET:
+        return None
+    if isinstance(value, SQLExpression):
+        return value.sql
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, (str, datetime)):
+        return "'" + str(value).replace("'", "''") + "'"
+    raise TypeError(f"Unsupported database default: {type(value).__name__}")
+
+
 def _column_sql(field: Field) -> str:
+    type_sql = _type_sql(field)
+    default = _default_sql(field)
+    if default is not None:
+        type_sql += f" DEFAULT {default}"
+    constraints = " PRIMARY KEY" if field.primary_key else (
+        "" if field.null else " NOT NULL"
+    )
+    if field.unique and not field.primary_key:
+        constraints += " UNIQUE"
+    if isinstance(field, ForeignKey):
+        target_pk = field.to._meta.fields[field.to._meta.pk_name]
+        constraints += (
+            f" REFERENCES {_quote(field.to._meta.db_table)}"
+            f" ({_quote(target_pk.column)}) ON DELETE {field.on_delete}"
+        )
+    return f"{_quote(field.column)} {type_sql}{constraints}"
+
+
+def _type_sql(field: Field) -> str:
     if isinstance(field, ForeignKey):
         target = field.to
         target_pk = target._meta.fields[target._meta.pk_name]
@@ -45,18 +93,87 @@ def _column_sql(field: Field) -> str:
         type_sql = "INTEGER"
     else:
         raise TypeError(f"Unsupported migration field: {type(field).__name__}")
-    constraints = " PRIMARY KEY" if field.primary_key else (
-        "" if field.null else " NOT NULL"
-    )
-    if field.unique and not field.primary_key:
-        constraints += " UNIQUE"
-    if isinstance(field, ForeignKey):
-        target_pk = field.to._meta.fields[field.to._meta.pk_name]
-        constraints += (
-            f" REFERENCES {_quote(field.to._meta.db_table)}"
-            f" ({_quote(target_pk.column)}) ON DELETE {field.on_delete}"
-        )
-    return f"{_quote(field.column)} {type_sql}{constraints}"
+    return type_sql
+
+
+def alter_migration(name: str, before: Iterable[type[Model]],
+                    after: Iterable[type[Model]], *,
+                    allow_destructive: bool = False) -> Migration:
+    """Diff existing tables and generate transactional PostgreSQL column ALTERs.
+
+    Removed columns and narrowing/incompatible type changes require an explicit
+    opt-in. Constraint and foreign-key target changes fail closed until a safe
+    migration operation exists for them.
+    """
+    if not name or not name.replace("_", "").isalnum():
+        raise ValueError("Migration name must contain letters, digits, or underscores")
+    before_list, after_list = list(before), list(after)
+    before_map = {model._meta.db_table: model for model in before_list}
+    after_map = {model._meta.db_table: model for model in after_list}
+    if len(before_map) != len(before_list) or len(after_map) != len(after_list):
+        raise ValueError("Models in a migration must use distinct tables")
+    if before_map.keys() != after_map.keys():
+        raise ValueError("alter_migration requires the same existing tables")
+    statements: list[str] = []
+    for table in sorted(before_map):
+        old = {field.column: field for field in before_map[table]._meta.fields.values()}
+        new = {field.column: field for field in after_map[table]._meta.fields.values()}
+        quoted_table = _quote(table)
+        for column, field in new.items():
+            if column not in old:
+                if field.primary_key:
+                    raise ValueError("Adding a primary key requires a manual migration")
+                statements.append(
+                    f"ALTER TABLE {quoted_table} ADD COLUMN {_column_sql(field)}"
+                )
+                continue
+            previous = old[column]
+            if previous.primary_key != field.primary_key:
+                raise ValueError("Changing a primary key requires a manual migration")
+            if previous.unique != field.unique:
+                raise ValueError("Changing a unique constraint requires a manual migration")
+            if isinstance(previous, ForeignKey) != isinstance(field, ForeignKey):
+                raise ValueError("Changing a foreign key requires a manual migration")
+            if isinstance(field, ForeignKey) and (
+                previous.to._meta.db_table != field.to._meta.db_table
+                or previous.on_delete != field.on_delete
+            ):
+                raise ValueError("Changing a foreign key requires a manual migration")
+            old_type, new_type = _type_sql(previous), _type_sql(field)
+            if old_type != new_type:
+                if field.primary_key:
+                    raise ValueError("Changing a primary key type requires a manual migration")
+                widening = (isinstance(previous, CharField)
+                            and isinstance(field, CharField)
+                            and field.max_length >= previous.max_length)
+                if not widening and not allow_destructive:
+                    raise ValueError(f"Type change on {table}.{column} requires allow_destructive")
+                quoted_column = _quote(column)
+                statements.append(
+                    f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} "
+                    f"TYPE {new_type} USING {quoted_column}::{new_type}"
+                )
+            old_default, new_default = _default_sql(previous), _default_sql(field)
+            if old_default != new_default:
+                statements.append(
+                    f"ALTER TABLE {quoted_table} ALTER COLUMN {_quote(column)} "
+                    + ("DROP DEFAULT" if new_default is None
+                       else f"SET DEFAULT {new_default}")
+                )
+            if previous.null != field.null:
+                statements.append(
+                    f"ALTER TABLE {quoted_table} ALTER COLUMN {_quote(column)} "
+                    + ("DROP NOT NULL" if field.null else "SET NOT NULL")
+                )
+        for column in sorted(old.keys() - new.keys()):
+            if old[column].primary_key:
+                raise ValueError("Dropping a primary key requires a manual migration")
+            if not allow_destructive:
+                raise ValueError(f"Dropping {table}.{column} requires allow_destructive")
+            statements.append(f"ALTER TABLE {quoted_table} DROP COLUMN {_quote(column)}")
+    if not statements:
+        raise ValueError("No schema changes detected")
+    return Migration(name, tuple(statements))
 
 
 def initial_migration(name: str, models: Iterable[type[Model]]) -> Migration:

@@ -83,7 +83,9 @@ class ModelSerializer:
             if isinstance(field, AutoField):
                 continue
             if name not in data:
-                if self.instance is None and not self.partial and field.default is _UNSET and not field.null:
+                if (self.instance is None and not self.partial
+                        and field.default is _UNSET and field.db_default is _UNSET
+                        and not field.null):
                     errors[name] = "This field is required"
                 continue
             value = data[name]

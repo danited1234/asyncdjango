@@ -35,12 +35,14 @@ class Field:
         null: bool = False,
         unique: bool = False,
         default: Any = _UNSET,
+        db_default: Any = _UNSET,
         db_column: str | None = None,
     ) -> None:
         self.primary_key = primary_key
         self.null = null
         self.unique = unique
         self.default = default
+        self.db_default = db_default
         self.db_column = db_column
         self.creation_order = next(_creation_order)
         self.name = ""
@@ -439,7 +441,8 @@ class QuerySet:
     async def create(self, **values: Any) -> Model:
         instance = self.model(**values)
         fields = [field for field in self.model._meta.fields.values()
-                  if not isinstance(field, AutoField) or getattr(instance, field.name) is not None]
+                  if (not isinstance(field, AutoField) or getattr(instance, field.name) is not None)
+                  and field.name not in instance._db_default_pending]
         returning = ", ".join(_quote(field.column)
                               for field in self.model._meta.fields.values())
         if fields:
@@ -540,6 +543,7 @@ class Model(metaclass=ModelBase):
     def __init__(self, **values: Any) -> None:
         self._database: DatabaseClient | None = None
         self._related_cache: dict[str, Model | None] = {}
+        self._db_default_pending: set[str] = set()
         allowed = set(self._meta.fields)
         allowed.update(f"{name}_id" for name, field in self._meta.fields.items()
                        if isinstance(field, ForeignKey))
@@ -548,6 +552,9 @@ class Model(metaclass=ModelBase):
             raise TypeError(f"Unknown model fields: {', '.join(sorted(unknown))}")
         for name, field in self._meta.fields.items():
             id_name = f"{name}_id"
+            if (name not in values and id_name not in values
+                    and field.default is _UNSET and field.db_default is not _UNSET):
+                self._db_default_pending.add(name)
             if isinstance(field, ForeignKey):
                 if name in values and id_name in values:
                     raise TypeError(f"Specify either {name} or {id_name}")
@@ -590,12 +597,15 @@ class Model(metaclass=ModelBase):
         if self.pk is None:
             created = await query.create(**{
                 name: _field_value(self, self._meta.fields[name])
-                for name in self._meta.fields if name != self._meta.pk_name
+                for name in self._meta.fields
+                if name != self._meta.pk_name and name not in self._db_default_pending
             })
             for name in self._meta.fields:
                 setattr(self, name, getattr(created, name))
+            self._db_default_pending.clear()
         else:
             await query.filter(**{self._meta.pk_name: self.pk}).update(**{
                 name: _field_value(self, self._meta.fields[name])
-                for name in self._meta.fields if name != self._meta.pk_name
+                for name in self._meta.fields
+                if name != self._meta.pk_name and name not in self._db_default_pending
             })

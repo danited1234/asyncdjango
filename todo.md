@@ -26,10 +26,10 @@
 - [x] Single-level foreign keys and `select_related`; reject implicit lazy relation I/O.
 - [ ] Reverse relations, many-to-many fields, and multi-level `select_related`.
 - [x] Unique constraints, Python defaults, basic field validation, and duplicate-write error mapping.
-- [ ] SQL defaults, complete field validation, and full database error mapping.
+- [ ] SQL defaults, complete field validation, and full database error mapping (SQL defaults implemented; full validation and error mapping remain).
 - [x] `async with transaction.atomic()` with nested savepoints and `select_for_update` (initial PostgreSQL implementation).
 - [x] Generate and apply tracked initial CREATE TABLE migrations for the supported field subset.
-- [ ] Generate ALTER/DROP migrations for changes to existing models.
+- [ ] Generate ALTER/DROP migrations for changes to existing models (column changes implemented with explicit destructive opt-in; constraint, table, rename, and dependency operations remain).
 
 ## 2. ASGI and REST vertical slice
 
