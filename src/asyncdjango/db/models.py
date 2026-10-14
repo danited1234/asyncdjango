@@ -581,7 +581,9 @@ class Model(metaclass=ModelBase):
         return self
 
     async def save(self) -> None:
-        database = self._database or current_database()
+        # The task's active transaction takes precedence over an instance's
+        # old binding, which may refer to a transaction that has already ended.
+        database = current_database() or self._database
         if database is None:
             raise RuntimeError("Bind a database with .using(database) before I/O")
         query = type(self).objects.using(database)

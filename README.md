@@ -109,3 +109,17 @@ with multiple workers need a shared atomic backend before relying on it for
 abuse protection. `ExactFilterBackend` only accepts named `filterset_fields`,
 `OrderingFilter` only accepts named `ordering_fields`, and
 `PageNumberPagination` uses awaited count and sliced PostgreSQL queries.
+
+## Serializer hooks and nested writes
+
+`ModelSerializer` supports `to_internal_value()`, `to_representation()`,
+`validate_<field>()`, and `validate()` hooks. Field and object validators may
+be synchronous pure-Python functions or `async def`; call `await ais_valid()`
+to run async hooks and database-backed checks. Declare a nested foreign-key
+serializer as a class attribute, such as `organization = OrganizationSerializer()`.
+Nested input is validated and represented when the relation was explicitly
+loaded, but, as in DRF, writes require explicit `async def create()` and
+`async def update()` methods on the parent serializer. `await asave()` wraps
+the operation in a native async transaction so a failed nested write rolls
+back all rows. The default methods reject nested writes rather than guessing
+whether to create, replace, clear, or delete related data.

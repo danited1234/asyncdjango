@@ -39,7 +39,7 @@
 - [x] Initial DRF-style `APIView`, router, and `ModelViewSet` with `async def` handlers.
 - [x] Initial model serializer field validation and async writes.
 - [x] Async uniqueness and foreign-key existence validators.
-- [ ] Full DRF serializer compatibility, including nested writes and custom field hooks.
+- [ ] Full DRF serializer compatibility, including nested writes and custom field hooks (core hooks and explicit transactional nested foreign-key writes exist; field classes, list serializers, relation variants, and full error-shape parity remain).
 - [ ] Authentication, permissions, pagination, filtering, and throttling (initial per-view implementations exist; shared distributed throttling, global policy settings, and broader DRF parity remain).
 - [x] OpenAPI schema generation and test client (initial registered-route schema and in-process async client).
 
