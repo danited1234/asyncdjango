@@ -1,0 +1,48 @@
+# asyncdjango
+
+An experimental async-native framework aiming for Django and Django REST Framework-style application code. This repository is at the foundation stage; it is **not** a Django replacement yet.
+
+The central rule is that request-time I/O must await an async driver directly. The normal database path must not use `sync_to_async`, `asyncio.to_thread`, or an executor. CPU-only work such as building a query may stay synchronous.
+
+## Current scope
+
+The first code is a small PostgreSQL driver spike built on `asyncpg`. It demonstrates a real async connection pool, awaited queries, and awaited transactions. It does not yet provide models, a queryset, migrations, or a REST API.
+
+The ASGI `DatabaseLifespan` wrapper opens and closes the pool at application startup and shutdown. A transaction yields a task-owned connection; use its methods inside that transaction. Nested transaction blocks create PostgreSQL savepoints.
+
+## Try the database spike
+
+Use Python 3.11+ and a PostgreSQL database you can connect to:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install -e .
+$env:ASYNCDJANGO_DATABASE_URL = "postgresql://user:password@localhost:5432/database"
+.venv\Scripts\python examples\native_async.py
+```
+
+The example runs five independent `pg_sleep(0.1)` queries concurrently. It reports elapsed time but makes no fixed performance assertion because database and machine conditions vary.
+
+## API direction
+
+Query construction should preserve familiar Django expressions where practical:
+
+```python
+queryset = User.objects.filter(is_active=True).order_by("-created_at")
+user = await User.objects.get(pk=1)
+
+async with transaction.atomic():
+    user = await User.objects.select_for_update().get(pk=1)
+    user.balance -= 10
+    await user.save()
+```
+
+The code above is a target API, **not implemented yet**. A database query, lazy relation load, or write must have an explicit `await` boundary. See [todo.md](todo.md) for implementation order and acceptance criteria.
+
+The intended Django/DRF syntax and known incompatibilities are in [docs/compatibility.md](docs/compatibility.md).
+
+Run the service-free lifespan tests with `PYTHONPATH=src python -m unittest discover -s tests`. If `ASYNCDJANGO_DATABASE_URL` and `asyncpg` are available, the same command also runs PostgreSQL integration tests.
+
+## Compatibility policy
+
+Aim to keep Django and DRF application syntax for models, query expressions, serializers, routers, and viewsets. Document every incompatible behavior rather than silently falling back to a thread. Start with PostgreSQL; add other databases only after the PostgreSQL execution path is complete.
