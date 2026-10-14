@@ -106,6 +106,8 @@ class Router:
         def handler(action: str):
             async def view(request: Request) -> JSONResponse:
                 return await getattr(viewset(), action)(request)
+            view.__asyncdjango_viewset__ = viewset
+            view.__asyncdjango_action__ = action
             return view
 
         self.application.add_route(path, handler("list"), methods=("GET",))

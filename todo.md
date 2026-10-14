@@ -41,7 +41,7 @@
 - [x] Async uniqueness and foreign-key existence validators.
 - [ ] Full DRF serializer compatibility, including nested writes and custom field hooks.
 - [ ] Authentication, permissions, pagination, filtering, and throttling.
-- [ ] OpenAPI schema generation and test client.
+- [x] OpenAPI schema generation and test client (initial registered-route schema and in-process async client).
 
 ## 3. Compatibility and release
 

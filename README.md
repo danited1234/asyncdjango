@@ -84,3 +84,12 @@ arrives; `request.body` is `None` until `await request.json()` consumes it.
 `send`. Disconnects cancel the active handler or response stream. Async
 middleware registered with `add_middleware()` wraps matching handlers in
 registration order, with the first middleware outermost.
+
+## Schema and in-process testing
+
+`generate_openapi(app)` produces an OpenAPI 3.1 document for registered routes.
+Routes registered through `Router` include model serializer field schemas and
+request/response shapes; ad hoc routes receive basic path and response entries.
+`AsyncTestClient(app)` drives ASGI lifespan startup/shutdown and lets tests use
+`await client.get(...)`, `await client.post(..., json_data=...)`, or
+`await client.request(..., body=async_chunks)` without an HTTP server.
