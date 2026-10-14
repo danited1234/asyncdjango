@@ -4,9 +4,9 @@
 
 - [x] Define the supported Django/DRF syntax and explicit incompatibilities in a compatibility matrix.
 - [ ] Pin a Django source version before reusing internals; preserve copyright notices and review its license obligations.
-- [ ] Keep the normal request and database path free of `sync_to_async`, `asyncio.to_thread`, and executor calls.
-- [ ] Make every operation that can perform I/O explicit with `await` or `async with`.
-- [ ] Prove behavior with tests and inspect the actual driver path; an `async def` signature alone is not proof of native async I/O.
+- [x] Keep the current request and database path free of `sync_to_async`, `asyncio.to_thread`, and executor calls, guarded by a source test.
+- [x] Make current I/O operations explicit with `await` or `async with`; reject implicit relation loads.
+- [x] Prove the current path with live PostgreSQL tests and direct `asyncpg` driver calls.
 
 ## 0. Async PostgreSQL foundation
 
@@ -47,7 +47,7 @@
 
 - [ ] Port one small existing Django/ADRF endpoint and record every source change.
 - [ ] Compare correctness and concurrency against Django/ADRF and a native async baseline under the same PostgreSQL workload.
-- [ ] Add blocking-call detection in the development/test configuration.
+- [x] Add a source guard against thread offloading and an event-loop blocking detector for tests.
 - [ ] Document configuration, migrations, deployment, security, and supported Python/PostgreSQL versions.
 - [ ] Define release criteria and publish only after the vertical slice passes integration tests.
 

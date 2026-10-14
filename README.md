@@ -12,6 +12,7 @@ The ASGI `DatabaseLifespan` wrapper opens and closes the pool at application sta
 
 Single-level foreign keys are supported. Use `select_related("organization")` to load one; reading an unloaded relation raises `UnloadedRelationError` so it cannot trigger an implicit database query.
 The initial serializer checks field types synchronously and checks unique and foreign-key values with awaited database queries. Database unique constraints still enforce correctness if concurrent requests race.
+The test suite scans the source for thread-offload calls and includes `EventLoopBlockDetector` to flag a stalled event loop during focused development tests.
 
 ## Try the database spike
 
