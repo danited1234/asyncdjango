@@ -6,9 +6,9 @@ The central rule is that request-time I/O must await an async driver directly. T
 
 ## Current scope
 
-The first code is a small PostgreSQL driver spike built on `asyncpg`. It demonstrates a real async connection pool, awaited queries, and awaited transactions. It does not yet provide models, a queryset, migrations, or a REST API.
+The first code is a PostgreSQL foundation built on `asyncpg`. It has an async connection pool, transactions, Django-style model declarations, lazy SQL construction, and an initial native async CRUD API. Migrations and the REST API are still to come.
 
-The ASGI `DatabaseLifespan` wrapper opens and closes the pool at application startup and shutdown. A transaction yields a task-owned connection; use its methods inside that transaction. Nested transaction blocks create PostgreSQL savepoints.
+The ASGI `DatabaseLifespan` wrapper opens and closes the pool at application startup and shutdown. A transaction yields a task-owned connection; use its methods inside that transaction. Nested transaction blocks create PostgreSQL savepoints. `set_rollback()` rolls back the current transaction level when its block exits.
 
 ## Try the database spike
 
@@ -22,6 +22,26 @@ $env:ASYNCDJANGO_DATABASE_URL = "postgresql://user:password@localhost:5432/datab
 ```
 
 The example runs five independent `pg_sleep(0.1)` queries concurrently. It reports elapsed time but makes no fixed performance assertion because database and machine conditions vary.
+
+The current model API binds a pool or transaction explicitly:
+
+```python
+from asyncdjango.db import AsyncPostgres, models
+
+class User(models.Model):
+    email = models.CharField(max_length=255)
+
+database = AsyncPostgres("postgresql://user:password@localhost/database")
+await database.connect()
+try:
+    user = await User.objects.using(database).get(pk=1)
+    async for other in User.objects.using(database).filter(email=user.email):
+        print(other.pk)
+finally:
+    await database.close()
+```
+
+The table must already exist for now. Normal query construction is lazy; `get`, `fetch_all`, writes, and async iteration perform I/O. A transaction connection can be passed to `.using(transaction)` to keep its queries inside the transaction.
 
 ## API direction
 
@@ -41,7 +61,7 @@ The code above is a target API, **not implemented yet**. A database query, lazy 
 
 The intended Django/DRF syntax and known incompatibilities are in [docs/compatibility.md](docs/compatibility.md).
 
-Run the service-free lifespan tests with `PYTHONPATH=src python -m unittest discover -s tests`. If `ASYNCDJANGO_DATABASE_URL` and `asyncpg` are available, the same command also runs PostgreSQL integration tests.
+Run tests after the editable install with `.venv\Scripts\python -m unittest discover -s tests`. If `ASYNCDJANGO_DATABASE_URL` points to a disposable PostgreSQL database, the same command also runs integration tests. Those tests create and drop a table named `asyncdjango_test_users` in that database.
 
 ## Compatibility policy
 

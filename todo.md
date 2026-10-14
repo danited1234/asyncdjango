@@ -11,18 +11,18 @@
 ## 0. Async PostgreSQL foundation
 
 - [x] Create package, repository, and native `asyncpg` connection spike.
-- [ ] Run the PostgreSQL integration tests for concurrent queries and cancellation against a live database.
+- [x] Run the PostgreSQL integration tests for concurrent queries and cancellation against a live database.
 - [x] Add connection pool lifecycle hooks for ASGI startup and shutdown.
 - [x] Define task ownership of transaction connections; reject access from another task.
-- [ ] Add nested transactions with savepoints and rollback-only behavior.
-- [ ] Ensure cancelled requests roll back and release connections.
+- [x] Add nested transaction and rollback-only APIs; verify both against PostgreSQL.
+- [x] Ensure cancelled database transactions roll back and release connections (HTTP disconnect handling remains open).
 
 ## 1. Django-style ORM vertical slice
 
-- [ ] Model metaclass, field declarations, model metadata, and table naming.
-- [ ] Lazy queryset construction with `filter`, `exclude`, `Q`, `order_by`, and SQL parameters.
-- [ ] Native awaited `get`, `all`, `count`, `exists`, `create`, `update`, `delete`, and model `save`.
-- [ ] Async iteration with bounded fetches; verify memory usage on large result sets.
+- [x] Model metaclass, field declarations, model metadata, and table naming (initial field subset).
+- [x] Lazy queryset construction with `filter`, `exclude`, `Q`, `order_by`, and SQL parameters (initial lookup subset).
+- [x] Native awaited `get`, `fetch_all`, `count`, `exists`, `create`, `update`, `delete`, and model `save` (initial PostgreSQL subset).
+- [x] Async iteration with bounded cursor prefetch; verify memory usage on a 50,000-row result set.
 - [ ] Foreign keys and `select_related`; define explicit lazy relation loading.
 - [ ] Unique constraints, defaults, validation boundaries, and database error mapping.
 - [ ] `async with transaction.atomic()` with nested savepoints and `select_for_update`.
