@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, AsyncIterable, Awaitable, Callable, Protocol
 
 from .db.transaction import using_database
 
@@ -85,11 +85,33 @@ class JSONResponse:
         await send({"type": "http.response.body", "body": self.body})
 
 
+class StreamingResponse:
+    """Send chunks as they arrive, without buffering the whole response."""
+
+    def __init__(self, body: AsyncIterable[bytes], status_code: int = 200,
+                 content_type: bytes = b"application/octet-stream") -> None:
+        self.body = body
+        self.status_code = status_code
+        self.content_type = content_type
+
+    async def send(self, send: Callable[..., Awaitable[None]]) -> None:
+        await send({"type": "http.response.start", "status": self.status_code,
+                    "headers": [(b"content-type", self.content_type)]})
+        async for chunk in self.body:
+            if not isinstance(chunk, bytes):
+                raise TypeError("Streaming response chunks must be bytes")
+            await send({"type": "http.response.body", "body": chunk,
+                        "more_body": True})
+        await send({"type": "http.response.body", "body": b""})
+
+
 class _Disconnected(Exception):
     pass
 
 
-Handler = Callable[[Request], Awaitable[JSONResponse]]
+Response = JSONResponse | StreamingResponse
+Handler = Callable[[Request], Awaitable[Response]]
+Middleware = Callable[[Request, Handler], Awaitable[Response]]
 
 
 class ASGIApplication:
@@ -101,7 +123,12 @@ class ASGIApplication:
         self.database = database
         self.max_body_size = max_body_size
         self._routes: list[tuple[str, str, re.Pattern[str], Handler]] = []
+        self._middleware: list[Middleware] = []
         self._lifespan = DatabaseLifespan(self._handle_http, database)
+
+    def add_middleware(self, middleware: Middleware) -> None:
+        """Register an async request/response wrapper; first added is outermost."""
+        self._middleware.append(middleware)
 
     def add_route(self, path: str, handler: Handler, *, methods: tuple[str, ...] = ("GET",)) -> None:
         if not path.startswith("/"):
@@ -178,20 +205,41 @@ class ASGIApplication:
             return
 
         request = Request(scope, body, path_params)
+
+        async def dispatch(current_request: Request) -> Response:
+            return await handler(current_request)
+
+        next_handler = dispatch
+        for middleware in reversed(self._middleware):
+            inner = next_handler
+
+            async def wrapped(current_request: Request, *, _middleware=middleware,
+                              _inner=inner) -> Response:
+                return await _middleware(current_request, _inner)
+
+            next_handler = wrapped
         with using_database(self.database):
-            handler_task = asyncio.create_task(handler(request))
+            handler_task = asyncio.create_task(next_handler(request))
             disconnect_task = asyncio.create_task(self._wait_for_disconnect(receive))
             done, _ = await asyncio.wait(
                 (handler_task, disconnect_task), return_when=asyncio.FIRST_COMPLETED
             )
-            if disconnect_task in done and handler_task not in done:
+            if disconnect_task in done:
                 handler_task.cancel()
                 await asyncio.gather(handler_task, return_exceptions=True)
                 return
-            disconnect_task.cancel()
-            await asyncio.gather(disconnect_task, return_exceptions=True)
             try:
                 response = await handler_task
             except Exception:
                 response = JSONResponse({"detail": "Internal server error"}, 500)
-            await response.send(send)
+            response_task = asyncio.create_task(response.send(send))
+            done, _ = await asyncio.wait(
+                (response_task, disconnect_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if disconnect_task in done:
+                response_task.cancel()
+                await asyncio.gather(response_task, return_exceptions=True)
+                return
+            disconnect_task.cancel()
+            await asyncio.gather(disconnect_task, return_exceptions=True)
+            await response_task

@@ -3,7 +3,7 @@
 import asyncio
 import unittest
 
-from asyncdjango.asgi import DatabaseLifespan
+from asyncdjango.asgi import ASGIApplication, DatabaseLifespan, JSONResponse, StreamingResponse
 
 
 class FakeDatabase:
@@ -82,3 +82,100 @@ class DatabaseLifespanTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(scopes, [{"type": "http", "path": "/"}])
         self.assertEqual(database.events, [])
+
+
+class HTTPPipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_middleware_order_and_short_circuit(self) -> None:
+        app = ASGIApplication(FakeDatabase())
+        events = []
+
+        async def view(request):
+            events.append("view")
+            return JSONResponse({"ok": True})
+
+        async def outer(request, next_handler):
+            events.append("outer-in")
+            response = await next_handler(request)
+            events.append("outer-out")
+            return response
+
+        async def inner(request, next_handler):
+            events.append("inner-in")
+            response = await next_handler(request)
+            events.append("inner-out")
+            return response
+
+        app.add_route("/", view)
+        app.add_middleware(outer)
+        app.add_middleware(inner)
+        sent = []
+        inbox = asyncio.Queue()
+        inbox.put_nowait({"type": "http.request", "body": b""})
+
+        async def send(message):
+            sent.append(message)
+
+        await app({"type": "http", "method": "GET", "path": "/"}, inbox.get, send)
+        self.assertEqual(events, ["outer-in", "inner-in", "view", "inner-out", "outer-out"])
+        self.assertEqual(sent[0]["status"], 200)
+
+        async def reject(request, next_handler):
+            return JSONResponse({"detail": "denied"}, 403)
+
+        app.add_middleware(reject)
+        events.clear()
+        sent.clear()
+        inbox.put_nowait({"type": "http.request", "body": b""})
+        await app({"type": "http", "method": "GET", "path": "/"}, inbox.get, send)
+        self.assertNotIn("view", events)
+        self.assertEqual(sent[0]["status"], 403)
+
+    async def test_streaming_response_preserves_chunk_boundaries(self) -> None:
+        sent = []
+
+        async def chunks():
+            yield b"first"
+            await asyncio.sleep(0)
+            yield b"second"
+
+        async def send(message):
+            sent.append(message)
+
+        await StreamingResponse(chunks()).send(send)
+        self.assertEqual([message["body"] for message in sent[1:]],
+                         [b"first", b"second", b""])
+        self.assertTrue(sent[1]["more_body"])
+        self.assertFalse(sent[-1].get("more_body", False))
+
+    async def test_disconnect_cancels_streaming_response(self) -> None:
+        app = ASGIApplication(FakeDatabase())
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        inbox = asyncio.Queue()
+        inbox.put_nowait({"type": "http.request", "body": b""})
+        sent = []
+
+        async def body():
+            try:
+                yield b"first"
+                started.set()
+                await asyncio.sleep(10)
+                yield b"never"
+            finally:
+                cancelled.set()
+
+        async def view(request):
+            return StreamingResponse(body())
+
+        async def send(message):
+            sent.append(message)
+
+        app.add_route("/stream", view)
+        call = asyncio.create_task(app(
+            {"type": "http", "method": "GET", "path": "/stream"}, inbox.get, send
+        ))
+        await asyncio.wait_for(started.wait(), 2)
+        inbox.put_nowait({"type": "http.disconnect"})
+        await asyncio.wait_for(call, 2)
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual([item.get("body") for item in sent[1:]], [b"first"])

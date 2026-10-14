@@ -3,7 +3,7 @@
 ## Project rules
 
 - [x] Define the supported Django/DRF syntax and explicit incompatibilities in a compatibility matrix.
-- [ ] Pin a Django source version before reusing internals; preserve copyright notices and review its license obligations.
+- [x] Pin a Django source version before reusing internals; preserve copyright notices and review its license obligations (see `docs/upstream.md`; no upstream source copied yet).
 - [x] Keep the current request and database path free of `sync_to_async`, `asyncio.to_thread`, and executor calls, guarded by a source test.
 - [x] Make current I/O operations explicit with `await` or `async with`; reject implicit relation loads.
 - [x] Prove the current path with live PostgreSQL tests and direct `asyncpg` driver calls.
@@ -54,3 +54,4 @@
 ## First useful milestone
 
 A model can be declared with Django-like fields, migrated, queried through a native PostgreSQL driver, serialized, served by an ASGI view, and updated inside an async transaction. The complete request path has no worker-thread bridge.
+
