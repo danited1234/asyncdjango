@@ -90,3 +90,54 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(params, (3,))
         with self.assertRaisesRegex(ValueError, "Not a foreign key"):
             Employee.objects.select_related("id")
+
+    def test_multilevel_select_related_joins_each_prefix_once(self) -> None:
+        class Company(models.Model):
+            name = models.CharField(max_length=30)
+
+        class Department(models.Model):
+            company = models.ForeignKey(Company, on_delete=models.CASCADE)
+
+        class Employee(models.Model):
+            department = models.ForeignKey(Department, on_delete=models.CASCADE)
+
+        sql, _ = (Employee.objects
+                  .select_related("department__company", "department")
+                  .compile())
+        self.assertEqual(sql.count('LEFT JOIN "test_models_department"'), 1)
+        self.assertEqual(sql.count('LEFT JOIN "test_models_company"'), 1)
+        self.assertIn('"t1"."company_id" = "t2"."id"', sql)
+        with self.assertRaisesRegex(ValueError, "Not a foreign key"):
+            Employee.objects.select_related("department__missing")
+
+    def test_reverse_foreign_key_is_lazy_queryset(self) -> None:
+        class Organization(models.Model):
+            name = models.CharField(max_length=30)
+
+        class Employee(models.Model):
+            organization = models.ForeignKey(
+                Organization, on_delete=models.CASCADE, related_name="staff"
+            )
+
+        parent = Organization(id=7, name="Acme")
+        sql, params = parent.staff.order_by("id").compile()
+        self.assertIn('"organization_id" = $1', sql)
+        self.assertEqual(params, (7,))
+        self.assertIs(parent.staff.model, Employee)
+        with self.assertRaisesRegex(ValueError, "Save the parent"):
+            _ = Organization(name="Unsaved").staff
+
+    def test_many_to_many_descriptor_does_not_evaluate_implicitly(self) -> None:
+        class Tag(models.Model):
+            name = models.CharField(max_length=20)
+
+        class Article(models.Model):
+            tags = models.ManyToManyField(Tag, related_name="articles")
+
+        article = Article(id=1)
+        self.assertIs(article.tags.model, Tag)
+        self.assertIs(Tag(id=2, name="tag").articles.model, Article)
+        self.assertIn("tags", Article._meta.many_to_many)
+        self.assertEqual(Article.tags.through_table, "test_models_article_tags")
+        with self.assertRaises(AttributeError):
+            article.tags = []

@@ -153,3 +153,114 @@ class ModelIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 'DELETE FROM "_asyncdjango_migrations" WHERE "name" = $1',
                 migration.name,
             )
+
+    async def test_multilevel_select_related_with_null_branch(self) -> None:
+        from asyncdjango.db import models
+        from asyncdjango.db.migrations import apply_migration, initial_migration
+
+        class Company(models.Model):
+            name = models.CharField(max_length=30)
+
+            class Meta:
+                db_table = "asyncdjango_test_companies"
+
+        class Department(models.Model):
+            company = models.ForeignKey(Company, on_delete=models.CASCADE)
+            name = models.CharField(max_length=30)
+
+            class Meta:
+                db_table = "asyncdjango_test_departments"
+
+        class Employee(models.Model):
+            department = models.ForeignKey(Department, on_delete=models.SET_NULL,
+                                           null=True, related_name="employees")
+            name = models.CharField(max_length=30)
+
+            class Meta:
+                db_table = "asyncdjango_test_multilevel_employees"
+
+        migration = initial_migration("test_0010_multilevel",
+                                      [Employee, Department, Company])
+        await apply_migration(self.database, migration)
+        try:
+            company = await Company.objects.using(self.database).create(name="Acme")
+            department = await Department.objects.using(self.database).create(
+                company=company, name="Engineering"
+            )
+            attached = await Employee.objects.using(self.database).create(
+                department=department, name="Alex"
+            )
+            detached = await Employee.objects.using(self.database).create(
+                name="No department"
+            )
+            query = Employee.objects.using(self.database).select_related(
+                "department__company"
+            )
+            loaded = await query.get(pk=attached.pk)
+            self.assertEqual(loaded.department.company.name, "Acme")
+            self.assertEqual(loaded.department.name, "Engineering")
+            self.assertEqual(await loaded.department.employees.count(), 1)
+            self.assertEqual((await loaded.department.employees.get()).name, "Alex")
+            missing = await query.get(pk=detached.pk)
+            self.assertIsNone(missing.department)
+        finally:
+            for table in ("asyncdjango_test_multilevel_employees",
+                          "asyncdjango_test_departments", "asyncdjango_test_companies"):
+                await self.database.execute(f'DROP TABLE IF EXISTS "{table}"')
+            await self.database.execute(
+                'DELETE FROM "_asyncdjango_migrations" WHERE "name" = $1',
+                migration.name,
+            )
+
+    async def test_many_to_many_forward_and_reverse_mutations(self) -> None:
+        import asyncpg
+        from asyncdjango.db import models
+        from asyncdjango.db.migrations import apply_migration, initial_migration
+
+        class Tag(models.Model):
+            name = models.CharField(max_length=30)
+
+            class Meta:
+                db_table = "asyncdjango_test_tags"
+
+        class Article(models.Model):
+            title = models.CharField(max_length=30)
+            tags = models.ManyToManyField(Tag, related_name="articles")
+
+            class Meta:
+                db_table = "asyncdjango_test_articles"
+
+        migration = initial_migration("test_0011_many_to_many", [Article, Tag])
+        await apply_migration(self.database, migration)
+        try:
+            article = await Article.objects.using(self.database).create(title="Native")
+            first = await Tag.objects.using(self.database).create(name="async")
+            second = await Tag.objects.using(self.database).create(name="django")
+            await article.tags.add(first, second, first)
+            self.assertEqual(await article.tags.count(), 2)
+            with self.assertRaises(asyncpg.ForeignKeyViolationError):
+                await article.tags.set([99999999])
+            self.assertEqual(await article.tags.count(), 2)
+            self.assertEqual({tag.name for tag in await article.tags.fetch_all()},
+                             {"async", "django"})
+            self.assertEqual(await first.articles.count(), 1)
+            other = await Article.objects.using(self.database).create(title="Other")
+            await first.articles.add(other)
+            self.assertEqual(await first.articles.count(), 2)
+            self.assertEqual({tag.name async for tag in article.tags},
+                             {"async", "django"})
+            await article.tags.remove(first)
+            self.assertEqual(await first.articles.count(), 1)
+            await article.tags.set([first])
+            self.assertEqual(await article.tags.count(), 1)
+            self.assertEqual((await article.tags.fetch_all())[0].name, "async")
+            await article.tags.clear()
+            self.assertEqual(await article.tags.count(), 0)
+        finally:
+            for table in ("asyncdjango_test_articles_tags", "asyncdjango_test_articles",
+                          "asyncdjango_test_tags"):
+                await self.database.execute(f'DROP TABLE IF EXISTS "{table}"')
+            await self.database.execute(
+                'DELETE FROM "_asyncdjango_migrations" WHERE "name" = $1',
+                migration.name,
+            )

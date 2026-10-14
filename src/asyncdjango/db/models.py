@@ -7,6 +7,7 @@ or provide Django's full field, relation, or queryset APIs yet.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from itertools import count
 from typing import Any, AsyncIterator, Protocol
 
@@ -83,6 +84,7 @@ class UnloadedRelationError(RuntimeError):
 
 class ForeignKey(Field):
     def __init__(self, to: type[Model], on_delete: str,
+                 related_name: str | None = None,
                  **kwargs: Any) -> None:
         if on_delete not in {CASCADE, RESTRICT, SET_NULL}:
             raise ValueError("Unsupported on_delete action")
@@ -90,6 +92,9 @@ class ForeignKey(Field):
             raise ValueError("SET NULL requires null=True")
         self.to = to
         self.on_delete = on_delete
+        if related_name not in (None, "+") and not related_name.isidentifier():
+            raise ValueError("related_name must be an identifier or '+'")
+        self.related_name = related_name
         super().__init__(**kwargs)
 
     @property
@@ -114,11 +119,45 @@ class ForeignKey(Field):
         instance._related_cache[self.name] = value
 
 
+class ManyToManyField:
+    """Declare an explicit-through-table relation with awaited mutations."""
+
+    def __init__(self, to: type[Model], *, related_name: str | None = None,
+                 db_table: str | None = None) -> None:
+        if related_name not in (None, "+") and not related_name.isidentifier():
+            raise ValueError("related_name must be an identifier or '+'")
+        if db_table is not None:
+            _quote(db_table)
+        self.to = to
+        self.related_name = related_name
+        self.db_table = db_table
+        self.name = ""
+        self.source: type[Model] | None = None
+
+    @property
+    def through_table(self) -> str:
+        if self.source is None:
+            raise RuntimeError("Many-to-many field is not attached to a model")
+        if self.db_table is not None:
+            return self.db_table
+        name = f"{self.source._meta.db_table}_{self.name}"
+        return name if len(name.encode()) <= 63 else name[:48] + "_" + sha256(name.encode()).hexdigest()[:12]
+
+    def __get__(self, instance: Model | None, owner: type[Model]):
+        if instance is None:
+            return self
+        return ManyToManyManager(instance, self, reverse=False)
+
+    def __set__(self, instance: Model, value: Any) -> None:
+        raise AttributeError("Use awaited add(), remove(), clear(), or set()")
+
+
 @dataclass(frozen=True)
 class ModelOptions:
     db_table: str
     fields: dict[str, Field]
     pk_name: str
+    many_to_many: dict[str, ManyToManyField]
 
 
 class DatabaseClient(Protocol):
@@ -228,12 +267,34 @@ class QuerySet:
         return clone
 
     def select_related(self, *names: str) -> QuerySet:
-        for name in names:
-            if not isinstance(self.model._meta.fields.get(name), ForeignKey):
-                raise ValueError(f"Not a foreign key field: {name}")
+        for path in names:
+            model = self.model
+            for name in path.split("__"):
+                field = model._meta.fields.get(name)
+                if not isinstance(field, ForeignKey):
+                    raise ValueError(f"Not a foreign key field: {path}")
+                model = field.to
         clone = self._clone()
         clone._related = tuple(dict.fromkeys((*self._related, *names)))
         return clone
+
+    def _related_plan(self) -> list[tuple[str, str, str, ForeignKey]]:
+        """Return each relation prefix once, with stable parent/child aliases."""
+        plan = []
+        aliases = {"": "t0"}
+        models = {"": self.model}
+        for selected in self._related:
+            parent_path = ""
+            for name in selected.split("__"):
+                path = f"{parent_path}__{name}" if parent_path else name
+                if path not in aliases:
+                    field = models[parent_path]._meta.fields[name]
+                    alias = f"t{len(aliases)}"
+                    plan.append((path, parent_path, alias, field))
+                    aliases[path] = alias
+                    models[path] = field.to
+                parent_path = path
+        return plan
 
     def _require_database(self) -> DatabaseClient:
         database = self._database or current_database()
@@ -325,19 +386,19 @@ class QuerySet:
             columns = [f'"t0".{_quote(field.column)} AS {_quote(field.column)}'
                        for field in fields]
             joins = []
-            for index, name in enumerate(self._related, 1):
-                foreign_key = self.model._meta.fields[name]
+            aliases = {"": "t0"}
+            for path, parent_path, alias, foreign_key in self._related_plan():
                 target = foreign_key.to
-                alias = f"t{index}"
                 target_pk = target._meta.fields[target._meta.pk_name]
                 joins.append(
                     f'LEFT JOIN {_quote(target._meta.db_table)} AS {_quote(alias)} '
-                    f'ON "t0".{_quote(foreign_key.column)} = '
+                    f'ON {_quote(aliases[parent_path])}.{_quote(foreign_key.column)} = '
                     f'{_quote(alias)}.{_quote(target_pk.column)}'
                 )
+                aliases[path] = alias
                 columns.extend(
                     f'{_quote(alias)}.{_quote(field.column)} AS '
-                    f'{_quote(name + "__" + field.column)}'
+                    f'{_quote(path + "__" + field.column)}'
                     for field in target._meta.fields.values()
                 )
             sql = (f"SELECT {', '.join(columns)} FROM "
@@ -378,17 +439,23 @@ class QuerySet:
                   for name, field in self.model._meta.fields.items()}
         instance = self.model(**values)
         instance._database = self._database or current_database()
-        for name in self._related:
-            foreign_key = self.model._meta.fields[name]
+        instances: dict[str, Model | None] = {"": instance}
+        for path, parent_path, _, foreign_key in self._related_plan():
+            parent = instances[parent_path]
+            if parent is None:
+                instances[path] = None
+                continue
             target = foreign_key.to
-            values = {field_name: row[f"{name}__{field.column}"]
+            values = {field_name: row[f"{path}__{field.column}"]
                       for field_name, field in target._meta.fields.items()}
             if values[target._meta.pk_name] is None:
-                setattr(instance, name, None)
+                setattr(parent, foreign_key.name, None)
+                instances[path] = None
             else:
                 related = target(**values)
                 related._database = instance._database
-                setattr(instance, name, related)
+                setattr(parent, foreign_key.name, related)
+                instances[path] = related
         return instance
 
     async def fetch_all(self) -> list[Model]:
@@ -490,11 +557,162 @@ class QuerySet:
         return int(status.rsplit(" ", 1)[-1])
 
 
+class ManyToManyManager:
+    """An explicit-I/O relation manager; attribute access itself is inert."""
+
+    def __init__(self, instance: Model, field: ManyToManyField,
+                 *, reverse: bool) -> None:
+        if instance.pk is None:
+            raise ValueError("Save the model before using a many-to-many relation")
+        self.instance = instance
+        self.field = field
+        self.reverse = reverse
+        self.model = field.source if reverse else field.to
+        self.owner_column = "target_id" if reverse else "source_id"
+        self.related_column = "source_id" if reverse else "target_id"
+
+    def _database(self) -> DatabaseClient:
+        database = current_database() or self.instance._database
+        if database is None:
+            raise RuntimeError("Bind a database before many-to-many I/O")
+        return database
+
+    def _ids(self, items: tuple[Any, ...]) -> list[Any]:
+        ids = []
+        for item in items:
+            if isinstance(item, Model):
+                if not isinstance(item, self.model) or item.pk is None:
+                    raise ValueError("Related objects must be saved instances of the target model")
+                ids.append(item.pk)
+            else:
+                if item is None or isinstance(item, bool):
+                    raise ValueError("Related primary keys must be non-null")
+                ids.append(item)
+        return ids
+
+    async def _add_on(self, database: DatabaseClient, ids: list[Any]) -> None:
+        if not ids:
+            return
+        values = []
+        params = []
+        for related_id in dict.fromkeys(ids):
+            source_id, target_id = ((related_id, self.instance.pk) if self.reverse
+                                    else (self.instance.pk, related_id))
+            params.extend((source_id, target_id))
+            values.append(f"(${len(params) - 1}, ${len(params)})")
+        await database.execute(
+            f"INSERT INTO {_quote(self.field.through_table)} "
+            f'("source_id", "target_id") VALUES {", ".join(values)} '
+            "ON CONFLICT DO NOTHING", *params,
+        )
+
+    async def add(self, *items: Any) -> None:
+        ids = self._ids(items)
+        await self._add_on(self._database(), ids)
+
+    async def remove(self, *items: Any) -> None:
+        ids = list(dict.fromkeys(self._ids(items)))
+        if not ids:
+            return
+        params = [self.instance.pk, *ids]
+        placeholders = ", ".join(f"${index}" for index in range(2, len(params) + 1))
+        await self._database().execute(
+            f"DELETE FROM {_quote(self.field.through_table)} "
+            f"WHERE {_quote(self.owner_column)} = $1 "
+            f"AND {_quote(self.related_column)} IN ({placeholders})", *params,
+        )
+
+    async def clear(self) -> None:
+        await self._database().execute(
+            f"DELETE FROM {_quote(self.field.through_table)} "
+            f"WHERE {_quote(self.owner_column)} = $1", self.instance.pk,
+        )
+
+    async def set(self, items: Any) -> None:
+        ids = self._ids(tuple(items))
+        database = self._database()
+        if isinstance(database, TransactionConnection):
+            async with database.transaction():
+                await self.clear()
+                await self._add_on(database, ids)
+        else:
+            async with database.transaction() as connection:
+                await connection.execute(
+                    f"DELETE FROM {_quote(self.field.through_table)} "
+                    f"WHERE {_quote(self.owner_column)} = $1", self.instance.pk,
+                )
+                await self._add_on(connection, ids)
+
+    def _select_sql(self) -> str:
+        target = self.model
+        target_pk = target._meta.fields[target._meta.pk_name]
+        columns = ", ".join(
+            f't.{_quote(field.column)} AS {_quote(field.column)}'
+            for field in target._meta.fields.values()
+        )
+        return (
+            f"SELECT {columns} FROM {_quote(target._meta.db_table)} AS t "
+            f"JOIN {_quote(self.field.through_table)} AS j "
+            f"ON t.{_quote(target_pk.column)} = j.{_quote(self.related_column)} "
+            f"WHERE j.{_quote(self.owner_column)} = $1"
+        )
+
+    async def fetch_all(self) -> list[Model]:
+        database = self._database()
+        rows = await database.fetch(self._select_sql(), self.instance.pk)
+        query = self.model.objects.using(database)
+        return [query._model_from_row(row) for row in rows]
+
+    async def count(self) -> int:
+        rows = await self._database().fetch(
+            f"SELECT COUNT(*) AS n FROM {_quote(self.field.through_table)} "
+            f"WHERE {_quote(self.owner_column)} = $1", self.instance.pk,
+        )
+        return rows[0]["n"]
+
+    def all(self) -> ManyToManyManager:
+        return self
+
+    async def _iterate(self) -> AsyncIterator[Model]:
+        database = self._database()
+        query = self.model.objects.using(database)
+        async for row in database.stream(self._select_sql(), self.instance.pk):
+            yield query._model_from_row(row)
+
+    def __aiter__(self) -> AsyncIterator[Model]:
+        return self._iterate()
+
+
 class _ManagerDescriptor:
     def __get__(self, instance: Model | None, owner: type[Model]) -> QuerySet:
         if instance is not None:
             raise AttributeError("objects is available on the model class")
         return QuerySet(owner)
+
+
+class _ReverseForeignKeyDescriptor:
+    def __init__(self, model: type[Model], field: ForeignKey) -> None:
+        self.model = model
+        self.field = field
+
+    def __get__(self, instance: Model | None, owner: type[Model]) -> QuerySet | _ReverseForeignKeyDescriptor:
+        if instance is None:
+            return self
+        if instance.pk is None:
+            raise ValueError("Save the parent before querying its reverse relation")
+        query = self.model.objects.filter(**{self.field.name + "_id": instance.pk})
+        database = current_database() or instance._database
+        return query.using(database) if database is not None else query
+
+
+class _ReverseManyToManyDescriptor:
+    def __init__(self, field: ManyToManyField) -> None:
+        self.field = field
+
+    def __get__(self, instance: Model | None, owner: type[Model]):
+        if instance is None:
+            return self
+        return ManyToManyManager(instance, self.field, reverse=True)
 
 
 def _field_value(instance: Model, field: Field) -> Any:
@@ -510,11 +728,15 @@ class ModelBase(type):
             return cls
 
         fields: dict[str, Field] = {}
+        many_to_many: dict[str, ManyToManyField] = {}
         for base in bases:
             if hasattr(base, "_meta"):
                 fields.update(base._meta.fields)
+                many_to_many.update(base._meta.many_to_many)
         fields.update({key: value for key, value in attrs.items()
                        if isinstance(value, Field)})
+        many_to_many.update({key: value for key, value in attrs.items()
+                             if isinstance(value, ManyToManyField)})
         if not any(field.primary_key for field in fields.values()):
             if "id" in fields:
                 raise TypeError("An explicit id field must be the primary key")
@@ -531,9 +753,28 @@ class ModelBase(type):
         if table is None:
             table = f"{cls.__module__.rsplit('.', 1)[-1]}_{name.lower()}"
         _quote(table)
-        cls._meta = ModelOptions(table, fields, primary_keys[0])
+        if set(fields) & set(many_to_many):
+            raise TypeError("A name cannot be both a column and a many-to-many field")
+        for key, field in many_to_many.items():
+            field.name = key
+            field.source = cls
+        cls._meta = ModelOptions(table, fields, primary_keys[0], many_to_many)
         cls.DoesNotExist = type("DoesNotExist", (LookupError,), {})
         cls.MultipleObjectsReturned = type("MultipleObjectsReturned", (LookupError,), {})
+        for field in fields.values():
+            if isinstance(field, ForeignKey) and field.related_name != "+":
+                reverse_name = field.related_name or f"{name.lower()}_set"
+                if reverse_name in field.to.__dict__:
+                    raise TypeError(f"Reverse relation conflicts with {field.to.__name__}.{reverse_name}")
+                setattr(field.to, reverse_name, _ReverseForeignKeyDescriptor(cls, field))
+        for field in many_to_many.values():
+            if field.to is cls:
+                raise TypeError("Self-referential many-to-many fields are not supported yet")
+            if field.related_name != "+":
+                reverse_name = field.related_name or f"{name.lower()}_set"
+                if reverse_name in field.to.__dict__:
+                    raise TypeError(f"Reverse relation conflicts with {field.to.__name__}.{reverse_name}")
+                setattr(field.to, reverse_name, _ReverseManyToManyDescriptor(field))
         return cls
 
 

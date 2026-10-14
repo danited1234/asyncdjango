@@ -10,7 +10,15 @@ The first code is a PostgreSQL foundation built on `asyncpg`. It has an async co
 
 The ASGI `DatabaseLifespan` wrapper opens and closes the pool at application startup and shutdown. A transaction yields a task-owned connection; use its methods inside that transaction. Nested transaction blocks create PostgreSQL savepoints. `set_rollback()` rolls back the current transaction level when its block exits.
 
-Single-level foreign keys are supported. Use `select_related("organization")` to load one; reading an unloaded relation raises `UnloadedRelationError` so it cannot trigger an implicit database query.
+Foreign keys support multi-level joins such as
+`select_related("department__company")`. Reading an unloaded forward relation
+raises `UnloadedRelationError` so it cannot trigger an implicit database query.
+Reverse foreign keys expose a lazy queryset, for example
+`await organization.employee_set.fetch_all()`. Many-to-many declarations use
+`models.ManyToManyField(Tag, related_name="articles")`; relation managers
+provide awaited `add`, `remove`, `clear`, `set`, `fetch_all`, and `count`.
+Accessing either relation manager performs no I/O. Initial migrations create
+the many-to-many join table after its target tables.
 The initial serializer checks field types synchronously and checks unique and foreign-key values with awaited database queries. Database unique constraints still enforce correctness if concurrent requests race.
 The test suite scans the source for thread-offload calls and includes `EventLoopBlockDetector` to flag a stalled event loop during focused development tests.
 

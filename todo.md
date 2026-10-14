@@ -24,7 +24,7 @@
 - [x] Native awaited `get`, `fetch_all`, `count`, `exists`, `create`, `update`, `delete`, and model `save` (initial PostgreSQL subset).
 - [x] Async iteration with bounded cursor prefetch; verify memory usage on a 50,000-row result set.
 - [x] Single-level foreign keys and `select_related`; reject implicit lazy relation I/O.
-- [ ] Reverse relations, many-to-many fields, and multi-level `select_related`.
+- [ ] Reverse relations, many-to-many fields, and multi-level `select_related` (core FK reverse managers, join tables, awaited M2M mutations, and multi-level joins exist; custom through models, prefetching, and broader relation/queryset parity remain).
 - [x] Unique constraints, Python defaults, basic field validation, and duplicate-write error mapping.
 - [ ] SQL defaults, complete field validation, and full database error mapping (SQL defaults implemented; full validation and error mapping remain).
 - [x] `async with transaction.atomic()` with nested savepoints and `select_for_update` (initial PostgreSQL implementation).
