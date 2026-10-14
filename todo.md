@@ -25,7 +25,8 @@
 - [x] Async iteration with bounded cursor prefetch; verify memory usage on a 50,000-row result set.
 - [x] Single-level foreign keys and `select_related`; reject implicit lazy relation I/O.
 - [ ] Reverse relations, many-to-many fields, and multi-level `select_related`.
-- [ ] Unique constraints, defaults, validation boundaries, and database error mapping.
+- [x] Unique constraints, Python defaults, basic field validation, and duplicate-write error mapping.
+- [ ] SQL defaults, complete field validation, and full database error mapping.
 - [x] `async with transaction.atomic()` with nested savepoints and `select_for_update` (initial PostgreSQL implementation).
 - [x] Generate and apply tracked initial CREATE TABLE migrations for the supported field subset.
 - [ ] Generate ALTER/DROP migrations for changes to existing models.
@@ -37,7 +38,8 @@
 - [ ] Add an async middleware pipeline and streaming request/response bodies.
 - [x] Initial DRF-style `APIView`, router, and `ModelViewSet` with `async def` handlers.
 - [x] Initial model serializer field validation and async writes.
-- [ ] Async database-backed serializer validators and full DRF serializer compatibility.
+- [x] Async uniqueness and foreign-key existence validators.
+- [ ] Full DRF serializer compatibility, including nested writes and custom field hooks.
 - [ ] Authentication, permissions, pagination, filtering, and throttling.
 - [ ] OpenAPI schema generation and test client.
 

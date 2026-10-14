@@ -16,6 +16,9 @@ from .transaction import current_database
 
 _creation_order = count()
 _UNSET = object()
+CASCADE = "CASCADE"
+RESTRICT = "RESTRICT"
+SET_NULL = "SET NULL"
 
 
 def _quote(name: str) -> str:
@@ -30,11 +33,13 @@ class Field:
         *,
         primary_key: bool = False,
         null: bool = False,
+        unique: bool = False,
         default: Any = _UNSET,
         db_column: str | None = None,
     ) -> None:
         self.primary_key = primary_key
         self.null = null
+        self.unique = unique
         self.default = default
         self.db_column = db_column
         self.creation_order = next(_creation_order)
@@ -75,11 +80,11 @@ class UnloadedRelationError(RuntimeError):
 
 
 class ForeignKey(Field):
-    def __init__(self, to: type[Model], *, on_delete: str = "CASCADE",
+    def __init__(self, to: type[Model], on_delete: str,
                  **kwargs: Any) -> None:
-        if on_delete not in {"CASCADE", "RESTRICT", "SET NULL"}:
+        if on_delete not in {CASCADE, RESTRICT, SET_NULL}:
             raise ValueError("Unsupported on_delete action")
-        if on_delete == "SET NULL" and not kwargs.get("null", False):
+        if on_delete == SET_NULL and not kwargs.get("null", False):
             raise ValueError("SET NULL requires null=True")
         self.to = to
         self.on_delete = on_delete

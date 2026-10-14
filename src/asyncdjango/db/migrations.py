@@ -48,6 +48,8 @@ def _column_sql(field: Field) -> str:
     constraints = " PRIMARY KEY" if field.primary_key else (
         "" if field.null else " NOT NULL"
     )
+    if field.unique and not field.primary_key:
+        constraints += " UNIQUE"
     if isinstance(field, ForeignKey):
         target_pk = field.to._meta.fields[field.to._meta.pk_name]
         constraints += (

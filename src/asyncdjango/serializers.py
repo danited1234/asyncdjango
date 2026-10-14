@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+import asyncpg
+
 from .db.models import (
     AutoField, BooleanField, CharField, DateTimeField, ForeignKey, IntegerField,
     Model, _UNSET,
@@ -118,13 +120,46 @@ class ModelSerializer:
             raise ValidationError(self.errors)
         return not self.errors
 
+    async def ais_valid(self, *, raise_exception: bool = False) -> bool:
+        """Validate fields and check unique values with native async queries."""
+        if not self.is_valid():
+            if raise_exception:
+                raise ValidationError(self.errors)
+            return False
+        model = self.Meta.model
+        for name, value in self.validated_data.items():
+            field = model._meta.fields[name]
+            if isinstance(field, ForeignKey) and value is not None:
+                if not await field.to.objects.filter(pk=value).exists():
+                    self.errors[name] = "Related object does not exist"
+                    continue
+            if not field.unique or value is None:
+                continue
+            query = model.objects.filter(**{name: value})
+            if self.instance is not None and self.instance.pk is not None:
+                query = query.exclude(pk=self.instance.pk)
+            if await query.exists():
+                self.errors[name] = "A row with this value already exists"
+        if self.errors:
+            self.validated_data = None
+            if raise_exception:
+                raise ValidationError(self.errors)
+            return False
+        return True
+
     async def asave(self) -> Model:
         if self.validated_data is None:
             raise RuntimeError("Call is_valid() before asave()")
         if self.instance is None:
-            self.instance = await self.Meta.model.objects.create(**self.validated_data)
+            try:
+                self.instance = await self.Meta.model.objects.create(**self.validated_data)
+            except asyncpg.UniqueViolationError as exc:
+                raise ValidationError({"non_field_errors": "Unique constraint violated"}) from exc
         else:
             for name, value in self.validated_data.items():
                 setattr(self.instance, name, value)
-            await self.instance.save()
+            try:
+                await self.instance.save()
+            except asyncpg.UniqueViolationError as exc:
+                raise ValidationError({"non_field_errors": "Unique constraint violated"}) from exc
         return self.instance

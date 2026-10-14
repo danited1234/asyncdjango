@@ -7,7 +7,7 @@ from typing import Any
 
 from .asgi import ASGIApplication, JSONResponse, Request
 from .db.models import IntegerField, Model, QuerySet
-from .serializers import ModelSerializer
+from .serializers import ModelSerializer, ValidationError
 
 
 class APIView:
@@ -60,9 +60,12 @@ class ModelViewSet:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return JSONResponse({"detail": "Invalid JSON"}, 400)
         serializer = self.serializer_class(data=payload)
-        if not serializer.is_valid():
+        if not await serializer.ais_valid():
             return JSONResponse(serializer.errors, 400)
-        await serializer.asave()
+        try:
+            await serializer.asave()
+        except ValidationError as exc:
+            return JSONResponse(exc.errors, 400)
         return JSONResponse(serializer.data, 201)
 
     async def update(self, request: Request) -> JSONResponse:
@@ -76,9 +79,12 @@ class ModelViewSet:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return JSONResponse({"detail": "Invalid JSON"}, 400)
         serializer = self.serializer_class(instance, data=payload)
-        if not serializer.is_valid():
+        if not await serializer.ais_valid():
             return JSONResponse(serializer.errors, 400)
-        await serializer.asave()
+        try:
+            await serializer.asave()
+        except ValidationError as exc:
+            return JSONResponse(exc.errors, 400)
         return JSONResponse(serializer.data)
 
     async def destroy(self, request: Request) -> JSONResponse:

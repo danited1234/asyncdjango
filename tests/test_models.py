@@ -76,7 +76,7 @@ class ModelTests(unittest.TestCase):
             name = models.CharField(max_length=50)
 
         class Employee(models.Model):
-            organization = models.ForeignKey(Organization)
+            organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
 
         employee = Employee(organization_id=3)
         self.assertEqual(employee.organization_id, 3)

@@ -13,7 +13,7 @@ from asyncdjango.rest import ModelViewSet, Router
 
 
 class User(models.Model):
-    email = models.CharField(max_length=255)
+    email = models.CharField(max_length=255, unique=True)
     age = models.IntegerField(null=True)
 
     class Meta:
@@ -158,11 +158,32 @@ class HTTPIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(updated[1]["body"])["age"], 22)
         rejected = await self._call_http(app, "POST", "/users", b'{"email":2}')
         self.assertEqual(rejected[0]["status"], 400)
+        duplicate = await self._call_http(
+            app, "POST", "/users", b'{"email":"viewset@example.com"}'
+        )
+        self.assertEqual(duplicate[0]["status"], 400)
+        self.assertIn("email", json.loads(duplicate[1]["body"]))
+        same_email_update = await self._call_http(
+            app, "PATCH", f"/users/{user_id}", b'{"email":"viewset@example.com"}'
+        )
+        self.assertEqual(same_email_update[0]["status"], 200)
         deleted = await self._call_http(app, "DELETE", f"/users/{user_id}")
         self.assertEqual(deleted[0]["status"], 204)
         self.assertEqual(deleted[1]["body"], b"")
         missing = await self._call_http(app, "GET", f"/users/{user_id}")
         self.assertEqual(missing[0]["status"], 404)
+
+    async def test_concurrent_duplicate_writes_are_rejected(self) -> None:
+        app = ASGIApplication(self.database)
+        Router(app).register("users", UserViewSet)
+        payload = b'{"email":"race@example.com"}'
+        first, second = await asyncio.gather(
+            self._call_http(app, "POST", "/users", payload),
+            self._call_http(app, "POST", "/users", payload),
+        )
+        self.assertEqual(sorted([first[0]["status"], second[0]["status"]]),
+                         [201, 400])
+        self.assertEqual(await User.objects.using(self.database).count(), 1)
 
     async def test_disconnect_cancels_database_transaction(self) -> None:
         from asyncdjango.db import transaction

@@ -104,7 +104,7 @@ class ModelIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 db_table = "asyncdjango_test_organizations"
 
         class Employee(models.Model):
-            organization = models.ForeignKey(Organization, on_delete="CASCADE")
+            organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
             name = models.CharField(max_length=50)
 
             class Meta:
@@ -113,6 +113,20 @@ class ModelIntegrationTests(unittest.IsolatedAsyncioTestCase):
         migration = initial_migration("test_0003_relationships", [Employee, Organization])
         await apply_migration(self.database, migration)
         try:
+            from asyncdjango.db import using_database
+            from asyncdjango.serializers import ModelSerializer
+
+            class EmployeeSerializer(ModelSerializer):
+                class Meta:
+                    model = Employee
+                    fields = ("organization", "name")
+
+            with using_database(self.database):
+                invalid = EmployeeSerializer(data={
+                    "organization": 999999, "name": "Missing org"
+                })
+                self.assertFalse(await invalid.ais_valid())
+                self.assertIn("organization", invalid.errors)
             organization = await Organization.objects.using(self.database).create(
                 name="Acme"
             )
