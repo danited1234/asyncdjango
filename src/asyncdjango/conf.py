@@ -16,9 +16,14 @@ DEFAULTS: dict[str, Any] = {
     "POOL": {"min_size": 1, "max_size": 10, "timeout": 30.0},
     # Per-alias overrides merged over POOL, e.g. {"replica": {"max_size": 4}}.
     "POOLS": {},
-    # Sync-only middleware paths to run natively on the event loop instead of
-    # in a worker thread. Only list middleware that does no blocking non-DB I/O.
+    # Middleware class paths whose synchronous hooks run natively on the event
+    # loop instead of in a worker thread (sync-only middleware, and
+    # MiddlewareMixin's process_request/process_response). Only list
+    # middleware that does no blocking I/O other than database access.
     "NATIVE_SYNC_MIDDLEWARE": [],
+    # Also treat Django's built-in middleware that does no blocking I/O as
+    # native (see asyncdjango.middleware).
+    "NATIVE_BUILTIN_MIDDLEWARE": True,
 }
 
 

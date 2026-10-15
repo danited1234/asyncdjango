@@ -32,6 +32,7 @@ Installed from `AsyncDjangoConfig.ready()`:
 | `QuerySet`, `RawQuerySet`, `Model` async methods, `aprefetch_related_objects` | Native implementations | `PATCH_ORM` |
 | Related-manager factories (`create_reverse_many_to_one_manager`, `create_forward_many_to_many_manager`, `create_generic_related_manager`) | Native async methods on the generated classes | `PATCH_ORM` |
 | `django.db.transaction.Atomic` | Adds `__aenter__`/`__aexit__` and `async def` decoration | `PATCH_ORM` |
+| `django.utils.deprecation.MiddlewareMixin.__acall__` | Runs `process_request`/`process_response` natively | Only for classes on the native middleware list |
 
 `asyncdjango/_threads.py` contains the only deliberate thread offloads
 (error reporting for 5xx responses, and finishing requests that already used

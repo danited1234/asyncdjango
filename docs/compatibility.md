@@ -23,6 +23,8 @@ With `"asyncdjango"` in `INSTALLED_APPS` (and `PATCH_ORM`, the default):
 | `connection_created`, `connection.execute_wrapper()` | Work per pooled connection checkout (for example, `search_path` multi-tenancy). |
 | `sync_to_native(fn)` | Runs any ORM-only synchronous function natively; a replacement for `sync_to_async` around ORM code. |
 | `NativeASGIHandler` | Django's request cycle; see the README for what moves off threads. |
+| Async middleware | Function and class middleware with `async_capable = True`, and async `process_view`/`process_exception`/`process_template_response` hooks. |
+| Django's built-in middleware | `MiddlewareMixin`'s `process_request`/`process_response` run natively instead of in a thread for built-ins that do no blocking I/O (session-dependent ones only with the database or signed-cookie session engine). See [guide.md §7](guide.md#7-middleware). |
 | `asyncdjango.rest_framework` | ADRF's API (`APIView`, generics, mixins, viewsets, routers, serializers, `@api_view`). |
 
 ## Behavior that differs from sync Django or ADRF

@@ -7,11 +7,12 @@ class AsyncDjangoConfig(AppConfig):
 
     def ready(self) -> None:
         from . import checks  # noqa: F401  (registers system checks)
-        from . import conf, signals
+        from . import conf, middleware, signals
         from .db import patch, scope
 
         scope.install_connection_hook()
         signals.install()
         signals.install_async_to_sync()
+        middleware.install()
         if conf.get("PATCH_ORM"):
             patch.install()

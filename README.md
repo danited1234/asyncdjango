@@ -164,6 +164,9 @@ The complete list is in [docs/compatibility.md](docs/compatibility.md).
 
 ## Documentation
 
+- [docs/guide.md](docs/guide.md): the user guide (setup, ORM, transactions,
+  calling Redis/HTTP services, middleware, REST, signals, testing,
+  troubleshooting).
 - [docs/compatibility.md](docs/compatibility.md): what is native, what
   differs, what is unsupported.
 - [docs/porting.md](docs/porting.md): moving an ADRF code base over.

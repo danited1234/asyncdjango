@@ -21,8 +21,10 @@ ASYNCDJANGO = {
     "POOL": {"min_size": 1, "max_size": 10, "timeout": 30.0},
     # Per-alias overrides merged over POOL.
     "POOLS": {"replica": {"max_size": 4}},
-    # Sync-only middleware to run on the event loop instead of a thread.
+    # Extra middleware classes whose sync hooks run on the event loop.
     "NATIVE_SYNC_MIDDLEWARE": [],
+    # Run Django's built-in middleware that does no blocking I/O natively.
+    "NATIVE_BUILTIN_MIDDLEWARE": True,
 }
 ```
 

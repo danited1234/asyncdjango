@@ -35,7 +35,7 @@ from functools import wraps
 from typing import Any
 
 import django
-from asgiref.sync import SyncToAsync, iscoroutinefunction
+from asgiref.sync import AsyncToSync, SyncToAsync, iscoroutinefunction
 from django.conf import settings
 from django.core import signals
 from django.core.handlers import base as base_handler
@@ -50,6 +50,7 @@ from django.utils.log import log_response
 
 from . import conf
 from ._threads import run_error_reporting, run_in_request_thread
+from .middleware import native_middleware_paths
 from .db.bridge import await_
 from .db.pool import close_pools, open_pools
 from .db.scope import run_native, sync_to_native
@@ -101,7 +102,7 @@ def _request_thread_used() -> bool:
 
 class NativeASGIHandler(ASGIHandler):
     def __init__(self) -> None:
-        self._native_middleware = set(conf.get("NATIVE_SYNC_MIDDLEWARE"))
+        self._native_middleware = native_middleware_paths()
         super().__init__()
 
     # Startup ---------------------------------------------------------------
@@ -296,11 +297,14 @@ class NativeASGIHandler(ASGIHandler):
     async def _process_exception(self, exc: Exception, request: Any) -> Any:
         if not self._exception_middleware:
             return None
-        if all(self._is_native_middleware(method) for method in self._exception_middleware):
+        # Async process_exception() hooks are wrapped in async_to_sync by
+        # Django; inside a native greenlet that awaits directly.
+        if all(isinstance(method, AsyncToSync) or self._is_native_middleware(method)
+               for method in self._exception_middleware):
             return await run_native(self.process_exception_by_middleware, exc, request)
-        # Third-party process_exception hooks may block; keep Django's thread.
-        adapted = super().adapt_method_mode(True, self.process_exception_by_middleware, False)
-        return await adapted(exc, request)
+        # Unlisted synchronous process_exception hooks may block; keep
+        # Django's per-request thread for them.
+        return await run_in_request_thread(self.process_exception_by_middleware, exc, request)
 
     def make_view_atomic(self, view: Any) -> Any:
         if not iscoroutinefunction(view):

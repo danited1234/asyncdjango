@@ -119,7 +119,10 @@ stalls longer than a threshold, which helps find remaining blocking calls.
 
 ## 5. Middleware
 
-Sync-only middleware runs in Django's per-request thread, as before. Options:
+Django's built-in middleware (`CommonMiddleware`, `GZipMiddleware`, `SecurityMiddleware`,
+`CsrfViewMiddleware`, ...) runs natively; under plain Django each costs one or
+two thread hops per request. Custom `MiddlewareMixin` subclasses and sync-only
+middleware still run in Django's per-request thread. Options:
 
 - Use an async-capable version where one exists. Django's own middleware and
   `django-cors-headers` 4 are async-capable.

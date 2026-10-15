@@ -128,6 +128,11 @@ class AtomicTests(OffloadGuardedTestCase):
         self.assertEqual(calls, [("sync",), ("async", 1)])
         calls.clear()
         async with transaction.atomic():
+            # A lambda returning a coroutine is awaited too.
+            transaction.on_commit(lambda: notify())
+        self.assertEqual(calls, [("async", 1)])
+        calls.clear()
+        async with transaction.atomic():
             transaction.on_commit(notify)
             django_transaction.set_rollback(True)
         self.assertEqual(calls, [])

@@ -6,7 +6,6 @@ from django.conf import settings
 from django.core.checks import Tags, Warning, register
 from django.utils.module_loading import import_string
 
-from . import conf
 
 
 @register(Tags.database)
@@ -31,14 +30,32 @@ def check_native_databases(app_configs, **kwargs):
 
 @register()
 def check_sync_middleware(app_configs, **kwargs):
-    native = set(conf.get("NATIVE_SYNC_MIDDLEWARE"))
+    from django.utils.deprecation import MiddlewareMixin
+
+    from .middleware import native_middleware_paths
+
+    native = native_middleware_paths()
     messages = []
     for path in getattr(settings, "MIDDLEWARE", []):
         try:
             middleware = import_string(path)
         except ImportError:
             continue
-        if not getattr(middleware, "async_capable", False) and path not in native:
+        if path in native:
+            continue
+        if (isinstance(middleware, type) and issubclass(middleware, MiddlewareMixin)
+                and middleware.__acall__ is MiddlewareMixin.__acall__):
+            messages.append(Warning(
+                f"Middleware {path!r} is based on MiddlewareMixin; its "
+                "process_request()/process_response() run in a worker thread "
+                "on every request.",
+                hint="Add it to ASYNCDJANGO['NATIVE_SYNC_MIDDLEWARE'] if its "
+                "hooks perform no blocking I/O other than database access, or "
+                "give it a native async __acall__.",
+                id="asyncdjango.W003",
+            ))
+            continue
+        if not getattr(middleware, "async_capable", False):
             messages.append(Warning(
                 f"Middleware {path!r} is synchronous only; Django runs it in a "
                 "worker thread on every request.",

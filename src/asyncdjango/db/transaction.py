@@ -141,29 +141,40 @@ def on_commit(func: Callable[[], Any], using: str | None = None,
               robust: bool = False) -> None:
     """Register ``func`` to run after the current transaction commits.
 
-    Accepts synchronous callables and coroutine functions. A coroutine function
-    registered inside an atomic block is awaited natively when the outermost
-    block commits; like any on_commit callback it delays the ``async with``
-    exit until it finishes. Registered outside an atomic block, Django would
-    run the callback immediately, so a coroutine function is scheduled as a
-    background task instead (exceptions are logged).
+    ``func`` may be synchronous, a coroutine function, or any callable that
+    returns an awaitable (``lambda: notify(order.pk)`` with an ``async def
+    notify``). Inside an atomic block the result is awaited natively when the
+    outermost block commits; like any on_commit callback it delays the
+    ``async with`` exit until it finishes. Outside an atomic block Django runs
+    callbacks immediately: an awaitable result is then awaited in place when
+    called from native code, or scheduled as a background task from async
+    code (exceptions are logged).
     """
-    if not inspect.iscoroutinefunction(func):
-        django_transaction.on_commit(func, using=using, robust=robust)
-        return
     connection = get_connection(using)
     if connection.in_atomic_block:
 
-        def run_coroutine() -> None:
-            await_(func())
+        def run() -> Any:
+            result = func()
+            if inspect.isawaitable(result):
+                return await_(result)
+            return result
 
-        functools.update_wrapper(run_coroutine, func)
-        django_transaction.on_commit(run_coroutine, using=using, robust=robust)
+        functools.update_wrapper(run, func)
+        django_transaction.on_commit(run, using=using, robust=robust)
+        return
+    try:
+        result = func()
+    except Exception:
+        if not robust:
+            raise
+        logger.exception("on_commit callback failed")
+        return
+    if not inspect.isawaitable(result):
         return
     if in_native_context():
-        await_(func())
+        await_(result)
         return
-    task = asyncio.get_running_loop().create_task(func())
+    task = asyncio.ensure_future(result)
     _background_tasks.add(task)
     task.add_done_callback(_finish_background_task)
 

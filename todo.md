@@ -41,6 +41,8 @@ Django app on real Django models. See README.md for the architecture.
 
 - [x] `NativeASGIHandler`: request signals, rendering, exception handling, logging, and `response.close()` without threads; thread-bound requests still close their thread's connections.
 - [x] `ATOMIC_REQUESTS` for async views; opt-in native sync middleware; system checks for sync-only middleware and non-native aliases.
+- [x] Django's non-blocking built-in middleware runs natively (MiddlewareMixin hooks); async `process_exception` hooks run natively; check W003 for thread-bound MiddlewareMixin middleware.
+- [x] User guide (`docs/guide.md`), including async service clients and middleware.
 - [x] `asyncdjango.rest_framework` with ADRF's API: APIView, generics, mixins, viewsets, routers, serializers (async method fields, nested, many), `@api_view`; sync and async auth/permission/throttle/filter/paginator hooks.
 - [x] Test helpers: `NativeTestCase` (rollback), `NativeTransactionTestCase` (flush), in-process `ASGIClient`.
 - [ ] Django Channels: document and test routing the `http` scope to `NativeASGIHandler`.
