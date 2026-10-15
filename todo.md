@@ -1,57 +1,57 @@
 # TODO
 
+The project was re-based on 2026-10-15 from a standalone framework (own
+model layer, router, and migrations on asyncpg; preserved on `main`) to a
+Django app on real Django models. See README.md for the architecture.
+
 ## Project rules
 
-- [x] Define the supported Django/DRF syntax and explicit incompatibilities in a compatibility matrix.
-- [x] Pin a Django source version before reusing internals; preserve copyright notices and review its license obligations (see `docs/upstream.md`; no upstream source copied yet).
-- [x] Keep the current request and database path free of `sync_to_async`, `asyncio.to_thread`, and executor calls, guarded by a source test.
-- [x] Make current I/O operations explicit with `await` or `async with`; reject implicit relation loads.
-- [x] Prove the current path with live PostgreSQL tests and direct `asyncpg` driver calls.
+- [x] Keep Django and DRF/ADRF syntax; reuse Django's own ORM code instead of reimplementing it.
+- [x] Keep the request and ORM path free of `sync_to_async`, `asyncio.to_thread`, and executors, guarded by a source test and a runtime `ThreadOffloadDetector` in the suite.
+- [x] Accidental synchronous ORM use from async code still raises `SynchronousOnlyOperation`.
+- [x] Pin the Django/DRF versions whose internals are patched or adapted; record every patch and adaptation with licenses (`docs/upstream.md`, `licenses/`).
+- [x] Prove behavior with live PostgreSQL integration tests.
+- [ ] Choose a license for asyncdjango itself before publishing.
 
-## 0. Async PostgreSQL foundation
+## 0. Native PostgreSQL execution
 
-- [x] Create package, repository, and native `asyncpg` connection spike.
-- [x] Run the PostgreSQL integration tests for concurrent queries and cancellation against a live database.
-- [x] Add connection pool lifecycle hooks for ASGI startup and shutdown.
-- [x] Define task ownership of transaction connections; reject access from another task.
-- [x] Add nested transaction and rollback-only APIs; verify both against PostgreSQL.
-- [x] Ensure cancelled database transactions roll back and release connections (HTTP disconnect handling remains open).
+- [x] Greenlet bridge: Django's synchronous ORM on the event loop, I/O awaited (`db/bridge.py`).
+- [x] psycopg 3 `AsyncConnectionPool` per event loop and alias; time zone, role, and isolation level configured per physical connection.
+- [x] Native `DatabaseWrapper` (Django's own, with an async connection facade), including server-side cursors.
+- [x] Task-owned scopes; `connections[alias]` routed to the active scope; cross-task use of a transaction rejected.
+- [x] ASGI lifespan opens and closes pools; unclosed pools no longer hang `asyncio.run()` shutdown.
+- [x] Cancellation (client disconnect, task cancel) rolls back and returns the connection.
+- [ ] Verify the thread-free query cancel path with libpq 17+ (psycopg-binary 3.3.2 bundles libpq 16.9, which cancels from a thread).
+- [ ] Reuse `DatabaseWrapper` objects across scopes if profiling on Linux shows the per-call construction matters.
 
-## 1. Django-style ORM vertical slice
+## 1. Django ORM API
 
-- [x] Model metaclass, field declarations, model metadata, and table naming (initial field subset).
-- [x] Lazy queryset construction with `filter`, `exclude`, `Q`, `order_by`, and SQL parameters (initial lookup subset).
-- [x] Native awaited `get`, `fetch_all`, `count`, `exists`, `create`, `update`, `delete`, and model `save` (initial PostgreSQL subset).
-- [x] Async iteration with bounded cursor prefetch; verify memory usage on a 50,000-row result set.
-- [x] Single-level foreign keys and `select_related`; reject implicit lazy relation I/O.
-- [ ] Reverse relations, many-to-many fields, and multi-level `select_related` (core FK reverse managers, join tables, awaited M2M mutations, and multi-level joins exist; custom through models, prefetching, and broader relation/queryset parity remain).
-- [x] Unique constraints, Python defaults, basic field validation, and duplicate-write error mapping.
-- [ ] SQL defaults, complete field validation, and full database error mapping (SQL defaults implemented; full validation and error mapping remain).
-- [x] `async with transaction.atomic()` with nested savepoints and `select_for_update` (initial PostgreSQL implementation).
-- [x] Generate and apply tracked initial CREATE TABLE migrations for the supported field subset.
-- [ ] Generate ALTER/DROP migrations for changes to existing models (column changes implemented with explicit destructive opt-in; constraint, table, rename, and dependency operations remain).
+- [x] All `QuerySet` async methods, async iteration (models, values, values_list, raw), `aiterator` with server-side cursors and per-chunk prefetch.
+- [x] `Model.asave()`, `adelete()`, `arefresh_from_db()` with signals, cascades, and `save()` overrides.
+- [x] Related managers: reverse FK, many-to-many, generic relations.
+- [x] `async with transaction.atomic()` (Django's and asyncdjango's), savepoints, durable, `set_rollback`, sync and async `on_commit`, `select_for_update`.
+- [x] Async signal receivers and `async_to_sync` inside native code.
+- [x] Opt-in `NativeManager`/`NativeModelMixin` for `PATCH_ORM = False`.
+- [x] Non-PostgreSQL aliases raise `NativeAsyncUnsupported`, or fall back with `SyncFallbackWarning`.
+- [x] ContentType cache warmed at startup for generic relations.
+- [ ] Native `SessionStore` async methods (db backend `asave` uses a thread) and remaining contrib async helpers.
+- [ ] `COPY` through the facade (currently raises; use psycopg directly).
 
-## 2. ASGI and REST vertical slice
+## 2. ASGI and REST
 
-- [x] Async JSON request/response and static/dynamic routing with startup/shutdown lifecycle.
-- [x] Cancel an in-flight handler and database transaction on client disconnect.
-- [x] Add an async middleware pipeline and streaming request/response bodies.
-- [x] Initial DRF-style `APIView`, router, and `ModelViewSet` with `async def` handlers.
-- [x] Initial model serializer field validation and async writes.
-- [x] Async uniqueness and foreign-key existence validators.
-- [ ] Full DRF serializer compatibility, including nested writes and custom field hooks (core hooks and explicit transactional nested foreign-key writes exist; field classes, list serializers, relation variants, and full error-shape parity remain).
-- [ ] Authentication, permissions, pagination, filtering, and throttling (initial per-view implementations exist; shared distributed throttling, global policy settings, and broader DRF parity remain).
-- [x] OpenAPI schema generation and test client (initial registered-route schema and in-process async client).
+- [x] `NativeASGIHandler`: request signals, rendering, exception handling, logging, and `response.close()` without threads; thread-bound requests still close their thread's connections.
+- [x] `ATOMIC_REQUESTS` for async views; opt-in native sync middleware; system checks for sync-only middleware and non-native aliases.
+- [x] `asyncdjango.rest_framework` with ADRF's API: APIView, generics, mixins, viewsets, routers, serializers (async method fields, nested, many), `@api_view`; sync and async auth/permission/throttle/filter/paginator hooks.
+- [x] Test helpers: `NativeTestCase` (rollback), `NativeTransactionTestCase` (flush), in-process `ASGIClient`.
+- [ ] Django Channels: document and test routing the `http` scope to `NativeASGIHandler`.
 
 ## 3. Compatibility and release
 
-- [x] Port one small existing Django/ADRF endpoint and record every source change (CRM GET /api/health/; see `docs/porting-health.md`).
-- [ ] Compare correctness and concurrency against Django/ADRF and a native async baseline under the same PostgreSQL workload.
-- [x] Add a source guard against thread offloading and an event-loop blocking detector for tests.
-- [ ] Document configuration, migrations, deployment, security, and supported Python/PostgreSQL versions.
-- [ ] Define release criteria and publish only after the vertical slice passes integration tests.
-
-## First useful milestone
-
-A model can be declared with Django-like fields, migrated, queried through a native PostgreSQL driver, serialized, served by an ASGI view, and updated inside an async transaction. The complete request path has no worker-thread bridge.
-
+- [x] Compare correctness and concurrency against Django/ADRF under the same PostgreSQL workload (`benchmarks/`, `docs/benchmarks.md`; identical response fingerprints).
+- [x] Document configuration, migrations, deployment, security, and supported versions (`docs/deployment.md`, `docs/compatibility.md`, `docs/porting.md`).
+- [ ] Port a slice of the CRM on a branch of the CRM repository (imports, `sync_to_async` → `ais_valid`/`adata`/`sync_to_native`, `async_capable` on its two logging middlewares) and run its test suite.
+- [x] GitHub Actions workflow: suite on Python 3.12-3.14 x PostgreSQL 14/18 service containers; optional benchmark job.
+- [ ] Confirm the first Linux CI run is green (verified locally on Windows with Python 3.12 and 3.13 only).
+- [ ] Benchmark with a real server (uvicorn + an HTTP load generator) on Linux.
+- [ ] Decide whether to support Django 5.2 LTS (untested; the patched internals are similar).
+- [ ] Define release criteria and publish only after the CRM slice runs in staging.

@@ -1,257 +1,120 @@
-"""ASGI lifespan checks that require no external services."""
+"""NativeASGIHandler: Django's request path without worker threads."""
 
 import asyncio
-import json
-import unittest
+import threading
 
-from asyncdjango.asgi import ASGIApplication, DatabaseLifespan, JSONResponse, StreamingResponse
+from django.db import connections
+from django.test import override_settings
 
+from asyncdjango.asgi import NativeASGIHandler
+from asyncdjango.db import pool_stats
+from asyncdjango.test import ASGIClient
 
-class FakeDatabase:
-    def __init__(self, *, fail_startup: bool = False) -> None:
-        self.events: list[str] = []
-        self.fail_startup = fail_startup
-
-    async def connect(self) -> None:
-        self.events.append("connect")
-        if self.fail_startup:
-            raise RuntimeError("connection failed")
-
-    async def close(self) -> None:
-        self.events.append("close")
+from .test_orm import OffloadGuardedTestCase
+from .testapp import views
+from .testapp.models import Organization
 
 
-class DatabaseLifespanTests(unittest.IsolatedAsyncioTestCase):
-    async def test_startup_and_shutdown(self) -> None:
-        database = FakeDatabase()
-        sent: list[dict] = []
-        messages = iter((
-            {"type": "lifespan.startup"},
-            {"type": "lifespan.shutdown"},
-        ))
+class HandlerTests(OffloadGuardedTestCase):
+    def client(self):
+        return ASGIClient(NativeASGIHandler())
 
-        async def child_app(scope, receive, send):
-            self.fail("Lifespan messages must not reach child app")
+    async def test_async_view_runs_on_the_loop_thread(self):
+        await Organization.objects.acreate(name="Acme")
+        response = await self.client().get("/orgs/")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["names"], ["Acme"])
+        self.assertEqual(body["thread"], threading.get_ident())
+        self.assertEqual(self.offload.calls, [])
+
+    async def test_deferred_render_and_404_are_native(self):
+        await Organization.objects.acreate(name="Acme")
+        response = await self.client().get("/deferred/")
+        self.assertEqual((response.status_code, response.content), (200, b"1"))
+        response = await self.client().get("/missing/")
+        self.assertEqual(response.status_code, 404)
+
+    @override_settings(
+        MIDDLEWARE=["tests.testapp.middleware.SyncCountingMiddleware"],
+        ASYNCDJANGO={"NATIVE_SYNC_MIDDLEWARE": [
+            "tests.testapp.middleware.SyncCountingMiddleware"]},
+    )
+    async def test_listed_sync_middleware_runs_natively(self):
+        await Organization.objects.acreate(name="Acme")
+        response = await self.client().get("/orgs/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["x-org-count"], "1")
+        body = response.json()
+        self.assertEqual(body["middleware_thread"], threading.get_ident())
+        self.assertEqual(body["org_count"], 1)
+
+    @override_settings(MIDDLEWARE=["tests.testapp.middleware.SyncCountingMiddleware"])
+    async def test_unlisted_sync_middleware_keeps_djangos_thread(self):
+        self.offload.forbid = False
+        response = await self.client().get("/orgs/")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(response.json()["middleware_thread"], threading.get_ident())
+
+    async def test_atomic_requests_for_async_views(self):
+        # The 500 is reported from a thread on purpose (asyncdjango._threads).
+        self.offload.allow = self.offload.allow | {"response_for_exception", "log_response"}
+        connections.settings["default"]["ATOMIC_REQUESTS"] = True
+        try:
+            client = self.client()
+            ok = await client.get("/create/", query_string="name=kept")
+            self.assertEqual(ok.status_code, 200)
+            failed = await client.get("/create/", query_string="name=lost&fail=1")
+            self.assertEqual(failed.status_code, 500)
+        finally:
+            connections.settings["default"]["ATOMIC_REQUESTS"] = False
+        self.assertEqual([o.name async for o in Organization.objects.all()], ["kept"])
+
+    async def test_client_disconnect_cancels_view_and_rolls_back(self):
+        self.offload.allow = self.offload.allow | {"cancel"}
+        views.events.clear()
+        app = NativeASGIHandler()
+        disconnect = asyncio.Event()
+        messages = [{"type": "http.request", "body": b"", "more_body": False}]
 
         async def receive():
-            return next(messages)
+            if messages:
+                return messages.pop()
+            await disconnect.wait()
+            return {"type": "http.disconnect"}
 
         async def send(message):
-            sent.append(message)
+            pass
 
-        await DatabaseLifespan(child_app, database)(
-            {"type": "lifespan"}, receive, send
-        )
-        self.assertEqual(database.events, ["connect", "close"])
-        self.assertEqual(sent, [
-            {"type": "lifespan.startup.complete"},
-            {"type": "lifespan.shutdown.complete"},
-        ])
+        scope = {"type": "http", "method": "GET", "path": "/slow/", "query_string": b"",
+                 "headers": [(b"host", b"testserver")], "root_path": ""}
+        request = asyncio.create_task(app(scope, receive, send))
+        while "created" not in views.events:
+            await asyncio.sleep(0.05)
+        disconnect.set()
+        await asyncio.wait_for(request, 5)
+        self.assertEqual(views.events, ["created", "cancelled"])
+        await asyncio.sleep(0.1)
+        self.assertEqual(await Organization.objects.acount(), 0)
+        await self.assert_pool_idle()
 
-    async def test_startup_failure(self) -> None:
-        database = FakeDatabase(fail_startup=True)
-        sent: list[dict] = []
-
-        async def child_app(scope, receive, send):
-            self.fail("Lifespan messages must not reach child app")
+    async def test_lifespan_opens_and_closes_pools(self):
+        app = NativeASGIHandler()
+        incoming = [{"type": "lifespan.startup"}, {"type": "lifespan.shutdown"}]
+        sent = []
+        opened = asyncio.Event()
 
         async def receive():
-            return {"type": "lifespan.startup"}
+            if len(incoming) == 1:
+                await opened.wait()
+            return incoming.pop(0)
 
         async def send(message):
-            sent.append(message)
+            sent.append(message["type"])
+            if message["type"] == "lifespan.startup.complete":
+                self.assertIn("default", pool_stats())
+                opened.set()
 
-        await DatabaseLifespan(child_app, database)(
-            {"type": "lifespan"}, receive, send
-        )
-        self.assertEqual(sent, [
-            {"type": "lifespan.startup.failed", "message": "connection failed"}
-        ])
-
-    async def test_http_goes_to_child(self) -> None:
-        database = FakeDatabase()
-        scopes: list[dict] = []
-
-        async def child_app(scope, receive, send):
-            scopes.append(scope)
-
-        async def unused():
-            await asyncio.sleep(0)
-
-        await DatabaseLifespan(child_app, database)(
-            {"type": "http", "path": "/"}, unused, unused
-        )
-        self.assertEqual(scopes, [{"type": "http", "path": "/"}])
-        self.assertEqual(database.events, [])
-
-
-class HTTPPipelineTests(unittest.IsolatedAsyncioTestCase):
-    async def test_middleware_order_and_short_circuit(self) -> None:
-        app = ASGIApplication(FakeDatabase())
-        events = []
-
-        async def view(request):
-            events.append("view")
-            return JSONResponse({"ok": True})
-
-        async def outer(request, next_handler):
-            events.append("outer-in")
-            response = await next_handler(request)
-            events.append("outer-out")
-            return response
-
-        async def inner(request, next_handler):
-            events.append("inner-in")
-            response = await next_handler(request)
-            events.append("inner-out")
-            return response
-
-        app.add_route("/", view)
-        app.add_middleware(outer)
-        app.add_middleware(inner)
-        sent = []
-        inbox = asyncio.Queue()
-        inbox.put_nowait({"type": "http.request", "body": b""})
-
-        async def send(message):
-            sent.append(message)
-
-        await app({"type": "http", "method": "GET", "path": "/"}, inbox.get, send)
-        self.assertEqual(events, ["outer-in", "inner-in", "view", "inner-out", "outer-out"])
-        self.assertEqual(sent[0]["status"], 200)
-
-        async def reject(request, next_handler):
-            return JSONResponse({"detail": "denied"}, 403)
-
-        app.add_middleware(reject)
-        events.clear()
-        sent.clear()
-        inbox.put_nowait({"type": "http.request", "body": b""})
-        await app({"type": "http", "method": "GET", "path": "/"}, inbox.get, send)
-        self.assertNotIn("view", events)
-        self.assertEqual(sent[0]["status"], 403)
-
-    async def test_streaming_response_preserves_chunk_boundaries(self) -> None:
-        sent = []
-
-        async def chunks():
-            yield b"first"
-            await asyncio.sleep(0)
-            yield b"second"
-
-        async def send(message):
-            sent.append(message)
-
-        await StreamingResponse(chunks()).send(send)
-        self.assertEqual([message["body"] for message in sent[1:]],
-                         [b"first", b"second", b""])
-        self.assertTrue(sent[1]["more_body"])
-        self.assertFalse(sent[-1].get("more_body", False))
-
-    async def test_disconnect_cancels_streaming_response(self) -> None:
-        app = ASGIApplication(FakeDatabase())
-        started = asyncio.Event()
-        cancelled = asyncio.Event()
-        inbox = asyncio.Queue()
-        inbox.put_nowait({"type": "http.request", "body": b""})
-        sent = []
-
-        async def body():
-            try:
-                yield b"first"
-                started.set()
-                await asyncio.sleep(10)
-                yield b"never"
-            finally:
-                cancelled.set()
-
-        async def view(request):
-            return StreamingResponse(body())
-
-        async def send(message):
-            sent.append(message)
-
-        app.add_route("/stream", view)
-        call = asyncio.create_task(app(
-            {"type": "http", "method": "GET", "path": "/stream"}, inbox.get, send
-        ))
-        await asyncio.wait_for(started.wait(), 2)
-        inbox.put_nowait({"type": "http.disconnect"})
-        await asyncio.wait_for(call, 2)
-        self.assertTrue(cancelled.is_set())
-        self.assertEqual([item.get("body") for item in sent[1:]], [b"first"])
-
-    async def test_streamed_request_reaches_handler_before_body_complete(self) -> None:
-        app = ASGIApplication(FakeDatabase())
-        first_seen = asyncio.Event()
-        inbox = asyncio.Queue()
-        sent = []
-
-        async def view(request):
-            chunks = []
-            async for chunk in request.stream():
-                chunks.append(chunk.decode())
-                first_seen.set()
-            return JSONResponse({"chunks": chunks})
-
-        async def send(message):
-            sent.append(message)
-
-        app.add_route("/upload", view, methods=("POST",), stream_request=True)
-        inbox.put_nowait({"type": "http.request", "body": b"first", "more_body": True})
-        call = asyncio.create_task(app(
-            {"type": "http", "method": "POST", "path": "/upload"}, inbox.get, send
-        ))
-        await asyncio.wait_for(first_seen.wait(), 2)
-        self.assertEqual(sent, [])
-        inbox.put_nowait({"type": "http.request", "body": b"second", "more_body": False})
-        await asyncio.wait_for(call, 2)
-        self.assertEqual(sent[0]["status"], 200)
-        self.assertEqual(json.loads(sent[1]["body"]), {"chunks": ["first", "second"]})
-
-    async def test_streamed_request_body_limit_even_when_handler_ignores_body(self) -> None:
-        app = ASGIApplication(FakeDatabase(), max_body_size=3)
-        inbox = asyncio.Queue()
-        sent = []
-
-        async def view(request):
-            return JSONResponse({"accepted": True})
-
-        async def send(message):
-            sent.append(message)
-
-        app.add_route("/upload", view, methods=("POST",), stream_request=True)
-        inbox.put_nowait({"type": "http.request", "body": b"abcd"})
-        await asyncio.wait_for(app(
-            {"type": "http", "method": "POST", "path": "/upload"}, inbox.get, send
-        ), 2)
-        self.assertEqual(sent[0]["status"], 413)
-
-    async def test_disconnect_cancels_streamed_request(self) -> None:
-        app = ASGIApplication(FakeDatabase())
-        first_seen = asyncio.Event()
-        cancelled = asyncio.Event()
-        inbox = asyncio.Queue()
-        sent = []
-
-        async def view(request):
-            try:
-                async for _ in request.stream():
-                    first_seen.set()
-            finally:
-                cancelled.set()
-            return JSONResponse({"ok": True})
-
-        async def send(message):
-            sent.append(message)
-
-        app.add_route("/upload", view, methods=("POST",), stream_request=True)
-        inbox.put_nowait({"type": "http.request", "body": b"first", "more_body": True})
-        call = asyncio.create_task(app(
-            {"type": "http", "method": "POST", "path": "/upload"}, inbox.get, send
-        ))
-        await asyncio.wait_for(first_seen.wait(), 2)
-        inbox.put_nowait({"type": "http.disconnect"})
-        await asyncio.wait_for(call, 2)
-        self.assertTrue(cancelled.is_set())
-        self.assertEqual(sent, [])
+        await app({"type": "lifespan"}, receive, send)
+        self.assertEqual(sent, ["lifespan.startup.complete", "lifespan.shutdown.complete"])
+        self.assertEqual(pool_stats(), {})

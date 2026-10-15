@@ -1,143 +1,193 @@
 # asyncdjango
 
-An experimental async-native framework aiming for Django and Django REST Framework-style application code. This repository is at the foundation stage; it is **not** a Django replacement yet.
+A Django app that makes Django's async ORM and ADRF-style REST views truly
+asynchronous on PostgreSQL. Add it to `INSTALLED_APPS` and existing code such
+as `await Order.objects.aget(pk=1)`, `await order.asave()`,
+`async for row in queryset`, and `async with transaction.atomic():` stops
+using worker threads. Queries are awaited on the event loop through psycopg 3's
+async driver and a connection pool.
 
-The central rule is that request-time I/O must await an async driver directly. The normal database path must not use `sync_to_async`, `asyncio.to_thread`, or an executor. CPU-only work such as building a query may stay synchronous.
+Your models, managers, querysets, migrations, admin, and settings remain
+Django's own. Nothing about the model layer is reimplemented.
 
-## Current scope
+> Status: 0.1.0.dev0, pre-release. Verified with Python 3.13, Django 6.0.3,
+> DRF 3.16.1, psycopg 3.3, PostgreSQL 18. See [docs/upstream.md](docs/upstream.md).
 
-The first code is a PostgreSQL foundation built on `asyncpg`. It has an async connection pool, transactions, Django-style model declarations, lazy SQL construction, and an initial native async CRUD API. Initial table migrations, a JSON ASGI router, serializers, and model viewsets are implemented. The broader Django/DRF feature set is still in progress.
+## Why
 
-The ASGI `DatabaseLifespan` wrapper opens and closes the pool at application startup and shutdown. A transaction yields a task-owned connection; use its methods inside that transaction. Nested transaction blocks create PostgreSQL savepoints. `set_rollback()` rolls back the current transaction level when its block exits.
+Django's async ORM methods are `await sync_to_async(self.get)(...)`: every
+call hops to a thread. ADRF adds more hops (authentication, permissions,
+throttles, and one per serializer field per row). Under load that costs CPU,
+needs a thread per in-flight request, and makes Django's thread-local
+connections hard to manage (`CONN_MAX_AGE = 0` to avoid orphaned connections,
+so a new connection per request).
 
-Foreign keys support multi-level joins such as
-`select_related("department__company")`. Reading an unloaded forward relation
-raises `UnloadedRelationError` so it cannot trigger an implicit database query.
-Reverse foreign keys expose a lazy queryset, for example
-`await organization.employee_set.fetch_all()`. Many-to-many declarations use
-`models.ManyToManyField(Tag, related_name="articles")`; relation managers
-provide awaited `add`, `remove`, `clear`, `set`, `fetch_all`, and `count`.
-Accessing either relation manager performs no I/O. Initial migrations create
-the many-to-many join table after its target tables.
-The initial serializer checks field types synchronously and checks unique and foreign-key values with awaited database queries. Database unique constraints still enforce correctness if concurrent requests race.
-The test suite scans the source for thread-offload calls and includes `EventLoopBlockDetector` to flag a stalled event loop during focused development tests.
+On the benchmark in [`benchmarks/`](benchmarks/) (an ADRF-style endpoint that
+fetches, counts, and serializes 20 related rows; same code, same database),
+asyncdjango served about 15 times the requests per second of ADRF at a
+twentieth of the CPU per request, on one thread instead of one per request.
+See [docs/benchmarks.md](docs/benchmarks.md) for the numbers and method.
 
-Initial and column-alteration migrations are documented in
-[`docs/migrations.md`](docs/migrations.md). Review generated SQL before applying
-destructive changes.
+## How it works
 
-## Try the database spike
+asyncdjango runs Django's own synchronous ORM code in a
+[greenlet](https://greenlet.readthedocs.io/) on the event loop thread, the
+technique SQLAlchemy's asyncio extension uses. Its PostgreSQL wrapper is
+Django's stock `DatabaseWrapper` whose raw connection is a facade over a pooled
+`psycopg.AsyncConnection`. When the ORM reaches I/O, the facade switches back
+to the event loop, awaits the query, and resumes the ORM code with the result.
+Other requests run while the query is in flight, and no thread is used.
 
-Use Python 3.11+ and a PostgreSQL database you can connect to:
+Because Django's code runs unchanged, its semantics carry over: signals,
+`save()` overrides, delete cascades, `on_delete` handlers, savepoints,
+`select_for_update`, `prefetch_related`, custom managers, execute wrappers,
+and `connection_created` receivers.
 
-```powershell
+Connections are owned by a *scope*. Outside a transaction, each awaited ORM
+call borrows a pooled connection and returns it. Inside
+`async with transaction.atomic()` the task keeps one connection until the
+outermost block exits.
+
+## Install
+
+```console
+pip install -e ".[drf]"
+```
+
+```python
+# settings.py
+INSTALLED_APPS = [
+    # ...
+    "asyncdjango",
+]
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",  # psycopg 3
+        # NAME, USER, PASSWORD, HOST, PORT as usual
+    }
+}
+
+ASYNCDJANGO = {
+    "POOL": {"min_size": 2, "max_size": 20},  # per worker process
+}
+```
+
+```python
+# asgi.py
+import os
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "project.settings")
+
+from asyncdjango.asgi import get_asgi_application
+
+application = get_asgi_application()
+```
+
+Run any ASGI server with lifespan support, for example
+`gunicorn project.asgi:application -k uvicorn.workers.UvicornWorker`. The
+handler opens the pools at startup and closes them at shutdown.
+
+## Use
+
+The ORM API is Django's:
+
+```python
+from django.db import transaction
+from django.http import JsonResponse
+
+async def transfer(request, source_id, target_id):
+    async with transaction.atomic():
+        source = await Account.objects.select_for_update().aget(pk=source_id)
+        target = await Account.objects.select_for_update().aget(pk=target_id)
+        source.balance -= 10
+        target.balance += 10
+        await source.asave()
+        await target.asave()
+    return JsonResponse({"ok": True})
+```
+
+REST views use ADRF's API from `asyncdjango.rest_framework`:
+
+```python
+from rest_framework.response import Response
+
+from asyncdjango.rest_framework import serializers, viewsets
+from asyncdjango.rest_framework.views import APIView
+
+class OrderSerializer(serializers.ModelSerializer):
+    customer_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = ["id", "total", "customer_name"]
+
+    def get_customer_name(self, order):
+        return order.customer.name  # an awaited query, not a thread hop
+
+class OrderDetail(APIView):
+    async def get(self, request, pk):
+        order = await Order.objects.aget(pk=pk)
+        return Response(await OrderSerializer(order).adata)
+
+class OrderViewSet(viewsets.ModelViewSet):  # alist, acreate, aretrieve, ...
+    queryset = Order.objects.all()
+    serializer_class = OrderSerializer
+```
+
+For synchronous helper code that only touches the database, replace
+`sync_to_async` with `sync_to_native`:
+
+```python
+from asyncdjango import sync_to_native
+
+is_valid = await sync_to_native(serializer.is_valid)()
+```
+
+`sync_to_native` runs on the event loop. Keep `sync_to_async` for code that
+calls blocking libraries (HTTP clients, boto3, synchronous Redis).
+
+## Read before adopting
+
+- Synchronous hooks reached from native code (model `save()` overrides,
+  signal receivers, DRF auth/permission/throttle classes, serializer fields
+  and validators) run **on the event loop**. Database access in them is fine;
+  other blocking I/O stalls the worker. Find it with
+  `asyncdjango.diagnostics.EventLoopBlockDetector`.
+- Child tasks cannot share an open transaction (`CrossTaskConnectionError`).
+- Only PostgreSQL with psycopg 3 is native. Other aliases raise
+  `NativeAsyncUnsupported` unless `ALLOW_SYNC_FALLBACK` is enabled.
+- Async tests must use `asyncdjango.test.NativeTestCase` or
+  `NativeTransactionTestCase` instead of Django's `TestCase`.
+
+The complete list is in [docs/compatibility.md](docs/compatibility.md).
+
+## Documentation
+
+- [docs/compatibility.md](docs/compatibility.md): what is native, what
+  differs, what is unsupported.
+- [docs/porting.md](docs/porting.md): moving an ADRF code base over.
+- [docs/deployment.md](docs/deployment.md): settings, pool sizing, servers,
+  security, supported versions.
+- [docs/benchmarks.md](docs/benchmarks.md): method and results.
+- [docs/upstream.md](docs/upstream.md): patched Django entry points, adapted
+  upstream code, and licenses.
+
+## Development
+
+```console
 python -m venv .venv
-.venv\Scripts\python -m pip install -e .
-$env:ASYNCDJANGO_DATABASE_URL = "postgresql://user:password@localhost:5432/database"
-.venv\Scripts\python examples\native_async.py
+.venv/Scripts/python -m pip install -e ".[drf]"   # .venv/bin/python on Linux/macOS
+$env:ASYNCDJANGO_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/asyncdjango"
+.venv/Scripts/python -m django test tests --settings=tests.settings
 ```
 
-The example runs five independent `pg_sleep(0.1)` queries concurrently. It reports elapsed time but makes no fixed performance assertion because database and machine conditions vary.
+The test runner creates and drops `test_<database name>`.
 
-The current model API binds a pool or transaction explicitly:
-
-```python
-from asyncdjango.db import AsyncPostgres, models
-
-class User(models.Model):
-    email = models.CharField(max_length=255)
-
-database = AsyncPostgres("postgresql://user:password@localhost/database")
-await database.connect()
-try:
-    user = await User.objects.using(database).get(pk=1)
-    async for other in User.objects.using(database).filter(email=user.email):
-        print(other.pk)
-finally:
-    await database.close()
-```
-
-Normal query construction is lazy; `get`, `fetch_all`, writes, and async iteration perform I/O. A transaction connection can be passed to `.using(transaction)` to keep its queries inside the transaction. An initial migration can create the table with `initial_migration("0001_initial", [User])` and `await apply_migration(database, migration)`. Later schema changes are not generated yet.
-
-## API direction
-
-Query construction should preserve familiar Django expressions where practical:
-
-```python
-queryset = User.objects.filter(is_active=True).order_by("-created_at")
-user = await User.objects.get(pk=1)
-
-async with transaction.atomic():
-    user = await User.objects.select_for_update().get(pk=1)
-    user.balance -= 10
-    await user.save()
-```
-
-The code above is a target API, **not implemented yet**. A database query, lazy relation load, or write must have an explicit `await` boundary. See [todo.md](todo.md) for implementation order and acceptance criteria.
-
-The intended Django/DRF syntax and known incompatibilities are in [docs/compatibility.md](docs/compatibility.md).
-
-Run tests after the editable install with `.venv\Scripts\python -m unittest discover -s tests`. If `ASYNCDJANGO_DATABASE_URL` points to a disposable PostgreSQL database, the same command also runs integration tests. Those tests create and drop a table named `asyncdjango_test_users` in that database.
-
-## Compatibility policy
-
-Aim to keep Django and DRF application syntax for models, query expressions, serializers, routers, and viewsets. Document every incompatible behavior rather than silently falling back to a thread. Start with PostgreSQL; add other databases only after the PostgreSQL execution path is complete.
-
-## Streaming HTTP bodies
-
-For an upload endpoint that should process chunks before the entire body has
-arrived, register the route with `stream_request=True` and iterate over
-`request.stream()` in the async handler. The stream is single-use. The default
-route mode continues to buffer up to `max_body_size` bytes and exposes
-`request.body` as bytes. Streaming routes enforce the same limit while data
-arrives; `request.body` is `None` until `await request.json()` consumes it.
-
-`StreamingResponse(async_iterable)` writes each bytes chunk directly to ASGI
-`send`. Disconnects cancel the active handler or response stream. Async
-middleware registered with `add_middleware()` wraps matching handlers in
-registration order, with the first middleware outermost.
-
-## Schema and in-process testing
-
-`generate_openapi(app)` produces an OpenAPI 3.1 document for registered routes.
-Routes registered through `Router` include model serializer field schemas and
-request/response shapes; ad hoc routes receive basic path and response entries.
-`AsyncTestClient(app)` drives ASGI lifespan startup/shutdown and lets tests use
-`await client.get(...)`, `await client.post(..., json_data=...)`, or
-`await client.request(..., body=async_chunks)` without an HTTP server.
-
-## REST access policies and query controls
-
-`APIView` and `ModelViewSet` accept DRF-style `authentication_classes`,
-`permission_classes`, and `throttle_classes`. Authentication and object
-permission hooks are awaited directly. `TokenAuthentication` parses the
-`Authorization: Token ...` header; applications subclass its
-`authenticate_credentials()` with their own native async credential lookup.
-No default token store is bundled. Keep tokens out of logs and require HTTPS.
-
-`SimpleRateThrottle` enforces an exact sliding window within one process.
-It is **not** a distributed or durable rate limiter; production deployments
-with multiple workers need a shared atomic backend before relying on it for
-abuse protection. `ExactFilterBackend` only accepts named `filterset_fields`,
-`OrderingFilter` only accepts named `ordering_fields`, and
-`PageNumberPagination` uses awaited count and sliced PostgreSQL queries.
-
-## Serializer hooks and nested writes
-
-`ModelSerializer` supports `to_internal_value()`, `to_representation()`,
-`validate_<field>()`, and `validate()` hooks. Field and object validators may
-be synchronous pure-Python functions or `async def`; call `await ais_valid()`
-to run async hooks and database-backed checks. Declare a nested foreign-key
-serializer as a class attribute, such as `organization = OrganizationSerializer()`.
-Nested input is validated and represented when the relation was explicitly
-loaded, but, as in DRF, writes require explicit `async def create()` and
-`async def update()` methods on the parent serializer. `await asave()` wraps
-the operation in a native async transaction so a failed nested write rolls
-back all rows. The default methods reject nested writes rather than guessing
-whether to create, replace, clear, or delete related data.
-
-## ADRF endpoint port
-
-`examples/ported_health.py` ports the CRM app's small ADRF health endpoint.
-`docs/porting-health.md` lists every source change and the remaining schema
-difference. The original CRM checkout was only inspected, not changed.
+GitHub Actions (`.github/workflows/tests.yml`) runs the suite on every push
+and pull request against live PostgreSQL 14 and 18 service containers, on
+Python 3.12, 3.13, and 3.14. Run the workflow manually with "benchmark"
+checked to also run the ADRF comparison; the table appears in the job
+summary. The suite checks
+that no request or ORM path offloads to a thread (`ThreadOffloadDetector`)
+and that every Django async method that would use a thread is patched.

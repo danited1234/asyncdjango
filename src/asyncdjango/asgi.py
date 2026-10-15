@@ -1,342 +1,344 @@
-"""Minimal ASGI lifespan wrapper for database pool startup and shutdown."""
+"""An ASGI handler that keeps Django's request path on the event loop.
+
+``django.core.handlers.asgi.ASGIHandler`` already awaits async views, but it
+still moves several per-request steps to a worker thread with
+``sync_to_async``: the ``request_started`` receivers, ``response.render()``
+(every DRF ``Response``), exception-to-response conversion, error logging,
+and ``response.close()`` (which sends ``request_finished``). Synchronous-only
+middleware also runs in a thread.
+
+``NativeASGIHandler`` runs those steps natively in a greenlet instead, so any
+database access in them is awaited on the event loop. Two exceptions stay on
+threads deliberately (see ``asyncdjango._threads``): 5xx/unexpected-error
+reporting, whose logging handlers may send mail synchronously, and finishing a
+request that already ran code in Django's per-request thread. It also:
+
+* answers ASGI ``lifespan`` events, opening the connection pools at startup
+  and closing them at shutdown;
+* supports ``ATOMIC_REQUESTS`` for async views with a native transaction;
+* can run selected synchronous middleware natively
+  (``ASYNCDJANGO["NATIVE_SYNC_MIDDLEWARE"]``).
+
+Synchronous *views* still run in a worker thread, as in Django: they may call
+blocking libraries. Write views as ``async def`` to stay on the event loop.
+
+Parts of ``handle()``, ``get_response_async()``, and ``_get_response_async()``
+are adapted from Django 6.0.3 (BSD-3-Clause); see docs/upstream.md.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import re
-from typing import Any, AsyncIterable, Awaitable, Callable, Protocol
+import logging
+import threading
+from functools import wraps
+from typing import Any
 
-from .db.transaction import using_database
+import django
+from asgiref.sync import SyncToAsync, iscoroutinefunction
+from django.conf import settings
+from django.core import signals
+from django.core.handlers import base as base_handler
+from django.core.handlers import exception as exception_handler
+from django.core.handlers.asgi import ASGIHandler, get_script_prefix
+from django.core.exceptions import BadRequest, PermissionDenied, RequestAborted
+from django.http import Http404
+from django.http.multipartparser import MultiPartParserError
+from django.db import connections
+from django.urls import set_script_prefix, set_urlconf
+from django.utils.log import log_response
+
+from . import conf
+from ._threads import run_error_reporting, run_in_request_thread
+from .db.bridge import await_
+from .db.pool import close_pools, open_pools
+from .db.scope import run_native, sync_to_native
+from .db.transaction import Atomic
+from .signals import asend as native_asend
+
+logger = logging.getLogger("asyncdjango.asgi")
+_load_lock = threading.Lock()
 
 
-class DatabaseLifecycle(Protocol):
-    async def connect(self) -> None: ...
-
-    async def close(self) -> None: ...
+_ROUTINE_EXCEPTIONS = (Http404, PermissionDenied, BadRequest, MultiPartParserError)
 
 
-ASGIApp = Callable[[dict[str, Any], Callable[..., Awaitable[Any]], Callable[..., Awaitable[None]]], Awaitable[None]]
+def _native_convert_exception_to_response(get_response: Any) -> Any:
+    if not iscoroutinefunction(get_response):
+        return _django_convert_exception_to_response(get_response)
+
+    @wraps(get_response)
+    async def inner(request: Any) -> Any:
+        try:
+            return await get_response(request)
+        except Exception as exc:
+            if isinstance(exc, _ROUTINE_EXCEPTIONS):
+                # 4xx responses: rendered and logged (as warnings) natively.
+                return await run_native(exception_handler.response_for_exception,
+                                        request, exc)
+            # 500s and SuspiciousOperation are reported at ERROR level, which
+            # may email admins synchronously: keep Django's thread for them.
+            return await run_error_reporting(exception_handler.response_for_exception,
+                                             request, exc)
+
+    return inner
 
 
-class DatabaseLifespan:
-    """Open the database pool at ASGI startup and close it at shutdown."""
+_django_convert_exception_to_response = exception_handler.convert_exception_to_response
 
-    def __init__(self, app: ASGIApp, database: DatabaseLifecycle) -> None:
-        self.app = app
-        self.database = database
 
-    async def __call__(
-        self,
-        scope: dict[str, Any],
-        receive: Callable[..., Awaitable[Any]],
-        send: Callable[..., Awaitable[None]],
-    ) -> None:
-        if scope["type"] != "lifespan":
-            await self.app(scope, receive, send)
+def _request_thread_used() -> bool:
+    """Whether this request already ran code in Django's per-request thread.
+
+    Synchronous views and unlisted sync middleware run in a thread owned by
+    the request's ThreadSensitiveContext. Django connections are thread-local,
+    so a connection opened there must also be closed there (by the
+    request_finished receivers); otherwise it is orphaned when the thread ends.
+    """
+    context = SyncToAsync.thread_sensitive_context.get(None)
+    return context is not None and context in SyncToAsync.context_to_thread_executor
+
+
+class NativeASGIHandler(ASGIHandler):
+    def __init__(self) -> None:
+        self._native_middleware = set(conf.get("NATIVE_SYNC_MIDDLEWARE"))
+        super().__init__()
+
+    # Startup ---------------------------------------------------------------
+
+    def load_middleware(self, is_async: bool = False) -> None:
+        # Django's load_middleware() wraps each layer with the module-level
+        # convert_exception_to_response(); substitute the native version.
+        with _load_lock:
+            base_handler.convert_exception_to_response = _native_convert_exception_to_response
+            try:
+                super().load_middleware(is_async)
+            finally:
+                base_handler.convert_exception_to_response = (
+                    _django_convert_exception_to_response
+                )
+
+    def _is_native_middleware(self, method: Any) -> bool:
+        target = getattr(method, "__self__", None) or getattr(method, "__wrapped__", None)
+        if target is None:
+            return False
+        cls = target if isinstance(target, type) else type(target)
+        return f"{cls.__module__}.{cls.__qualname__}" in self._native_middleware
+
+    def adapt_method_mode(self, is_async: bool, method: Any, method_is_async: bool | None = None,
+                          debug: bool = False, name: str | None = None) -> Any:
+        if method_is_async is None:
+            method_is_async = iscoroutinefunction(method)
+        if is_async and not method_is_async and self._is_native_middleware(method):
+            return sync_to_native(method)
+        if (not is_async and method_is_async and name
+                and name.removeprefix("middleware ") in self._native_middleware):
+            # A natively run sync middleware calls the async handler beneath
+            # it; it already runs in a greenlet, so await that handler there.
+            @wraps(method)
+            def call_async(request: Any) -> Any:
+                return await_(method(request))
+
+            return call_async
+        return super().adapt_method_mode(is_async, method, method_is_async, debug, name)
+
+    # ASGI entry point --------------------------------------------------------
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] == "lifespan":
+            await self.lifespan(scope, receive, send)
             return
+        await super().__call__(scope, receive, send)
 
+    async def lifespan(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         while True:
             message = await receive()
             if message["type"] == "lifespan.startup":
                 try:
-                    await self.database.connect()
+                    await open_pools()
+                    await warm_content_types()
                 except Exception as exc:
+                    logger.exception("Opening database pools failed")
                     await send({"type": "lifespan.startup.failed", "message": str(exc)})
                     return
                 await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
                 try:
-                    await self.database.close()
+                    await close_pools()
                 except Exception as exc:
+                    logger.exception("Closing database pools failed")
                     await send({"type": "lifespan.shutdown.failed", "message": str(exc)})
                     return
                 await send({"type": "lifespan.shutdown.complete"})
                 return
 
+    # Request handling (adapted from Django's ASGIHandler.handle) ---------------
 
-class AnonymousUser:
-    is_authenticated = False
-
-
-class Request:
-    def __init__(self, scope: dict[str, Any], body: bytes | None,
-                 path_params: dict[str, str] | None = None,
-                 stream_queue: asyncio.Queue[bytes | None] | None = None) -> None:
-        self.scope = scope
-        self.body = body
-        self._stream_queue = stream_queue
-        self._stream_started = False
-        self.method = scope["method"]
-        self.path = scope["path"]
-        self.path_params = path_params or {}
-        self.user: Any = AnonymousUser()
-        self.auth: Any = None
-
-    @property
-    def query_params(self) -> dict[str, str]:
-        from urllib.parse import parse_qs
-
-        raw = self.scope.get("query_string", b"")
-        return {key: values[-1] for key, values in parse_qs(
-            raw.decode("utf-8"), keep_blank_values=True
-        ).items()}
-
-    async def json(self) -> Any:
-        """Decode a buffered body, or consume a streamed body once."""
-        if self.body is None:
-            self.body = b"".join([chunk async for chunk in self.stream()])
-        return json.loads(self.body)
-
-    async def stream(self):
-        """Yield incoming chunks without waiting for the whole request body."""
-        if self._stream_queue is None:
-            yield self.body or b""
+    async def handle(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        try:
+            body_file = await self.read_body(receive)
+        except RequestAborted:
             return
-        if self._stream_started:
-            raise RuntimeError("A request body stream can only be read once")
-        self._stream_started = True
-        while True:
-            chunk = await self._stream_queue.get()
-            if chunk is None:
-                return
-            yield chunk
-
-
-class JSONResponse:
-    def __init__(self, data: Any, status_code: int = 200,
-                 headers: list[tuple[bytes, bytes]] | None = None) -> None:
-        self.status_code = status_code
-        self.headers = headers or []
-        self.body = (b"" if status_code == 204 else
-                     json.dumps(data, separators=(",", ":")).encode("utf-8"))
-
-    async def send(self, send: Callable[..., Awaitable[None]]) -> None:
-        await send({
-            "type": "http.response.start",
-            "status": self.status_code,
-            "headers": (([] if self.status_code == 204 else
-                         [(b"content-type", b"application/json")]) + self.headers),
-        })
-        await send({"type": "http.response.body", "body": self.body})
-
-
-class StreamingResponse:
-    """Send chunks as they arrive, without buffering the whole response."""
-
-    def __init__(self, body: AsyncIterable[bytes], status_code: int = 200,
-                 content_type: bytes = b"application/octet-stream") -> None:
-        self.body = body
-        self.status_code = status_code
-        self.content_type = content_type
-
-    async def send(self, send: Callable[..., Awaitable[None]]) -> None:
-        await send({"type": "http.response.start", "status": self.status_code,
-                    "headers": [(b"content-type", self.content_type)]})
-        async for chunk in self.body:
-            if not isinstance(chunk, bytes):
-                raise TypeError("Streaming response chunks must be bytes")
-            await send({"type": "http.response.body", "body": chunk,
-                        "more_body": True})
-        await send({"type": "http.response.body", "body": b""})
-
-
-class _Disconnected(Exception):
-    pass
-
-
-Response = JSONResponse | StreamingResponse
-Handler = Callable[[Request], Awaitable[Response]]
-Middleware = Callable[[Request, Handler], Awaitable[Response]]
-
-
-class ASGIApplication:
-    """A small async HTTP router with database lifecycle and disconnect handling."""
-
-    def __init__(self, database: DatabaseLifecycle, *, max_body_size: int = 1_048_576) -> None:
-        if max_body_size < 1:
-            raise ValueError("max_body_size must be positive")
-        self.database = database
-        self.max_body_size = max_body_size
-        self._routes: list[tuple[str, str, re.Pattern[str], Handler, bool]] = []
-        self._middleware: list[Middleware] = []
-        self._lifespan = DatabaseLifespan(self._handle_http, database)
-
-    def add_middleware(self, middleware: Middleware) -> None:
-        """Register an async request/response wrapper; first added is outermost."""
-        self._middleware.append(middleware)
-
-    def add_route(self, path: str, handler: Handler, *, methods: tuple[str, ...] = ("GET",),
-                  stream_request: bool = False) -> None:
-        if not path.startswith("/"):
-            raise ValueError("Route paths must start with /")
-        pattern_parts = []
-        for part in path.split("/"):
-            if part.startswith("{") and part.endswith("}"):
-                name = part[1:-1]
-                if not name.isidentifier():
-                    raise ValueError(f"Invalid route parameter: {name}")
-                pattern_parts.append(f"(?P<{name}>[^/]+)")
-            else:
-                pattern_parts.append(re.escape(part))
-        pattern = re.compile("/".join(pattern_parts))
-        for method in methods:
-            if any(existing_method == method.upper() and existing_path == path
-                   for existing_method, existing_path, _, _, _ in self._routes):
-                raise ValueError(f"Duplicate route: {(method.upper(), path)}")
-            self._routes.append((method.upper(), path, pattern, handler, stream_request))
-
-    async def __call__(self, scope, receive, send) -> None:
-        await self._lifespan(scope, receive, send)
-
-    async def _read_body(self, receive) -> bytes:
-        chunks = []
-        size = 0
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                raise _Disconnected
-            if message["type"] != "http.request":
-                continue
-            chunk = message.get("body", b"")
-            size += len(chunk)
-            if size > self.max_body_size:
-                raise ValueError("Request body is too large")
-            chunks.append(chunk)
-            if not message.get("more_body", False):
-                return b"".join(chunks)
-
-    async def _wait_for_disconnect(self, receive) -> None:
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return
-
-    async def _pump_stream(self, receive, queue, body_done, too_large, disconnected) -> None:
-        size = 0
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                disconnected.set()
-                return
-            if message["type"] != "http.request":
-                continue
-            chunk = message.get("body", b"")
-            size += len(chunk)
-            if size > self.max_body_size:
-                too_large.set()
-                return
-            if chunk:
-                queue.put_nowait(chunk)
-            if not message.get("more_body", False):
-                queue.put_nowait(None)
-                body_done.set()
-                break
-        await self._wait_for_disconnect(receive)
-        disconnected.set()
-
-    async def _handle_http(self, scope, receive, send) -> None:
-        if scope["type"] != "http":
-            raise ValueError(f"Unsupported ASGI scope: {scope['type']}")
-        path = scope["path"]
-        method = scope["method"].upper()
-        handler = None
-        stream_request = False
-        path_params = {}
-        path_found = False
-        for route_method, _, pattern, route_handler, route_stream_request in self._routes:
-            match = pattern.fullmatch(path)
-            if match is None:
-                continue
-            path_found = True
-            if route_method == method:
-                handler = route_handler
-                stream_request = route_stream_request
-                path_params = match.groupdict()
-                break
-        if handler is None:
-            status = 405 if path_found else 404
-            await JSONResponse({"detail": "Not found" if status == 404 else "Method not allowed"}, status).send(send)
+        set_script_prefix(get_script_prefix(scope))
+        await native_asend(signals.request_started, sender=self.__class__, scope=scope)
+        request, error_response = self.create_request(scope, body_file)
+        if request is None:
+            body_file.close()
+            await self.send_response(error_response, send)
+            await self._close_response(error_response)
             return
-        if stream_request:
-            stream_queue = asyncio.Queue()
-            body_done = asyncio.Event()
-            too_large = asyncio.Event()
-            disconnected = asyncio.Event()
-            pump_task = asyncio.create_task(self._pump_stream(
-                receive, stream_queue, body_done, too_large, disconnected
-            ))
-            request = Request(scope, None, path_params, stream_queue)
-            disconnect_task = asyncio.create_task(disconnected.wait())
-            too_large_task = asyncio.create_task(too_large.wait())
-            body_done_task = asyncio.create_task(body_done.wait())
-        else:
+
+        async def process_request(request: Any, send: Any) -> Any:
+            response = await self.run_get_response(request)
             try:
-                body = await self._read_body(receive)
-            except _Disconnected:
-                return
-            except ValueError:
-                await JSONResponse({"detail": "Request body is too large"}, 413).send(send)
-                return
-            request = Request(scope, body, path_params)
-            pump_task = None
-            disconnect_task = asyncio.create_task(self._wait_for_disconnect(receive))
-            too_large_task = None
-            body_done_task = None
+                await self.send_response(response, send)
+            except asyncio.CancelledError:
+                # Client disconnected during send_response (ignore exception).
+                pass
+            return response
 
-        async def dispatch(current_request: Request) -> Response:
-            return await handler(current_request)
-
-        next_handler = dispatch
-        for middleware in reversed(self._middleware):
-            inner = next_handler
-
-            async def wrapped(current_request: Request, *, _middleware=middleware,
-                              _inner=inner) -> Response:
-                return await _middleware(current_request, _inner)
-
-            next_handler = wrapped
-        with using_database(self.database):
-            try:
-                handler_task = asyncio.create_task(next_handler(request))
-                monitors = {disconnect_task}
-                if too_large_task is not None:
-                    monitors.add(too_large_task)
-                done, _ = await asyncio.wait(
-                    {handler_task, *monitors}, return_when=asyncio.FIRST_COMPLETED
-                )
-                if disconnect_task in done or too_large_task in done:
-                    handler_task.cancel()
-                    await asyncio.gather(handler_task, return_exceptions=True)
-                    if too_large_task in done and disconnect_task not in done:
-                        await JSONResponse({"detail": "Request body is too large"}, 413).send(send)
-                    return
+        tasks = [
+            asyncio.create_task(self.listen_for_disconnect(receive)),
+            asyncio.create_task(process_request(request, send)),
+        ]
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in tasks:
+            if task.done():
                 try:
-                    response = await handler_task
-                except Exception:
-                    response = JSONResponse({"detail": "Internal server error"}, 500)
-                if body_done_task is not None:
-                    done, _ = await asyncio.wait(
-                        {body_done_task, *monitors}, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    if disconnect_task in done:
-                        return
-                    if too_large_task in done:
-                        await JSONResponse({"detail": "Request body is too large"}, 413).send(send)
-                        return
-                response_task = asyncio.create_task(response.send(send))
-                done, _ = await asyncio.wait(
-                    {response_task, *monitors}, return_when=asyncio.FIRST_COMPLETED
+                    task.result()
+                except RequestAborted:
+                    pass
+                except AssertionError:
+                    body_file.close()
+                    raise
+            else:
+                # Allow views to handle cancellation; native transactions roll
+                # back and return their connections as the task unwinds.
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        try:
+            response = tasks[1].result()
+        except asyncio.CancelledError:
+            if _request_thread_used():
+                await run_in_request_thread(signals.request_finished.send, self.__class__)
+            else:
+                await native_asend(signals.request_finished, sender=self.__class__)
+        else:
+            await self._close_response(response)
+        body_file.close()
+
+    async def _close_response(self, response: Any) -> None:
+        # response.close() sends request_finished, which closes Django's
+        # thread-local connections; run it where those connections live.
+        if _request_thread_used():
+            await run_in_request_thread(response.close)
+        else:
+            await run_native(response.close)
+
+    async def get_response_async(self, request: Any) -> Any:
+        set_urlconf(settings.ROOT_URLCONF)
+        response = await self._middleware_chain(request)
+        response._resource_closers.append(request.close)
+        if response.status_code >= 500:
+            # ERROR level: handlers like AdminEmailHandler block, so keep
+            # Django's thread for it.
+            await run_error_reporting(log_response, "%s: %s", response.reason_phrase,
+                                      request.path, response=response, request=request)
+        elif response.status_code >= 400:
+            log_response("%s: %s", response.reason_phrase, request.path,
+                         response=response, request=request)
+        return response
+
+    async def _get_response_async(self, request: Any) -> Any:
+        response = None
+        callback, callback_args, callback_kwargs = self.resolve_request(request)
+        for middleware_method in self._view_middleware:
+            response = await middleware_method(request, callback, callback_args,
+                                               callback_kwargs)
+            if response:
+                break
+        if response is None:
+            wrapped_callback = self.make_view_atomic(callback)
+            if not iscoroutinefunction(wrapped_callback):
+                # Synchronous views keep Django's worker-thread behavior.
+                wrapped_callback = self.adapt_method_mode(True, wrapped_callback, False)
+            try:
+                response = await wrapped_callback(request, *callback_args, **callback_kwargs)
+            except Exception as exc:
+                response = await self._process_exception(exc, request)
+                if response is None:
+                    raise
+        self.check_response(response, callback)
+        if hasattr(response, "render") and callable(response.render):
+            for middleware_method in self._template_response_middleware:
+                response = await middleware_method(request, response)
+                self.check_response(
+                    response, middleware_method,
+                    name="%s.process_template_response"
+                    % (middleware_method.__self__.__class__.__name__,),
                 )
-                if disconnect_task in done or too_large_task in done:
-                    response_task.cancel()
-                    await asyncio.gather(response_task, return_exceptions=True)
-                    return
-                await response_task
-            finally:
-                pending = (disconnect_task, too_large_task, body_done_task, pump_task)
-                for task in pending:
-                    if task is not None:
-                        task.cancel()
-                await asyncio.gather(*(task for task in pending if task is not None),
-                                     return_exceptions=True)
+            try:
+                if iscoroutinefunction(response.render):
+                    response = await response.render()
+                else:
+                    response = await run_native(response.render)
+            except Exception as exc:
+                response = await self._process_exception(exc, request)
+                if response is None:
+                    raise
+        if asyncio.iscoroutine(response):
+            raise RuntimeError("Response is still a coroutine.")
+        return response
+
+    async def _process_exception(self, exc: Exception, request: Any) -> Any:
+        if not self._exception_middleware:
+            return None
+        if all(self._is_native_middleware(method) for method in self._exception_middleware):
+            return await run_native(self.process_exception_by_middleware, exc, request)
+        # Third-party process_exception hooks may block; keep Django's thread.
+        adapted = super().adapt_method_mode(True, self.process_exception_by_middleware, False)
+        return await adapted(exc, request)
+
+    def make_view_atomic(self, view: Any) -> Any:
+        if not iscoroutinefunction(view):
+            return super().make_view_atomic(view)
+        non_atomic_requests = getattr(view, "_non_atomic_requests", set())
+        for alias, settings_dict in connections.settings.items():
+            if settings_dict["ATOMIC_REQUESTS"] and alias not in non_atomic_requests:
+                view = Atomic(alias, True, False)(view)
+        return view
+
+
+async def warm_content_types() -> None:
+    """Load every ContentType into Django's cache with one native query.
+
+    Generic relation managers and ``get_for_model()`` otherwise run a
+    synchronous query on a cache miss, which fails in async code.
+    """
+    from django.apps import apps
+
+    if not apps.is_installed("django.contrib.contenttypes"):
+        return
+    from django.contrib.contenttypes.models import ContentType
+    from django.db import router
+
+    using = router.db_for_read(ContentType)
+    from .db.pool import is_native_alias
+
+    if not is_native_alias(using):
+        return
+
+    def load() -> None:
+        for content_type in ContentType.objects.db_manager(using).all():
+            ContentType.objects._add_to_cache(using, content_type)
+
+    await run_native(load)
+
+
+def get_asgi_application() -> NativeASGIHandler:
+    """Drop-in replacement for ``django.core.asgi.get_asgi_application()``."""
+    django.setup(set_prefix=False)
+    return NativeASGIHandler()

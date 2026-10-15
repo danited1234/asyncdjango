@@ -1,0 +1,113 @@
+# Configuration and deployment
+
+## Supported versions
+
+Python 3.12+ (Django 6.0's minimum), Django 6.0.x, Django REST framework 3.16.x (optional),
+psycopg 3.2+ with psycopg-pool 3.2+, greenlet 3.0+, and PostgreSQL 14+
+(Django 6.0's minimum). The verified combination is listed in
+[upstream.md](upstream.md). Linux and macOS work as is. Windows works for
+development with a selector event loop (see [compatibility.md](compatibility.md)).
+
+## Settings
+
+```python
+ASYNCDJANGO = {
+    # Replace Django's thread-based async ORM methods with native ones.
+    "PATCH_ORM": True,
+    # Raise NativeAsyncUnsupported (False) or fall back to Django's thread
+    # implementation with a SyncFallbackWarning (True) for non-native aliases.
+    "ALLOW_SYNC_FALLBACK": False,
+    # psycopg_pool.AsyncConnectionPool options for every alias.
+    "POOL": {"min_size": 1, "max_size": 10, "timeout": 30.0},
+    # Per-alias overrides merged over POOL.
+    "POOLS": {"replica": {"max_size": 4}},
+    # Sync-only middleware to run on the event loop instead of a thread.
+    "NATIVE_SYNC_MIDDLEWARE": [],
+}
+```
+
+`POOL` accepts any `AsyncConnectionPool` keyword: `min_size`, `max_size`,
+`timeout` (seconds to wait for a free connection before
+`django.db.OperationalError`), `max_waiting`, `max_lifetime`, `max_idle`,
+`reconnect_timeout`, `num_workers`.
+
+The usual `DATABASES` options apply to native connections: `NAME`, `USER`,
+`PASSWORD`, `HOST`, `PORT`, `TIME_ZONE`, `OPTIONS` (including
+`isolation_level`, `assume_role`, `server_side_binding`, `sslmode` and other
+libpq parameters), `AUTOCOMMIT`, `ATOMIC_REQUESTS` (supported for async views
+by `NativeASGIHandler`), `DISABLE_SERVER_SIDE_CURSORS`, and
+`CONN_HEALTH_CHECKS` (enables the pool's connection check). `CONN_MAX_AGE` and
+`OPTIONS["pool"]` configure Django's synchronous connections only.
+
+Prepared statements stay disabled (Django's default), so PgBouncer in
+transaction mode works.
+
+## Connection budget
+
+Each worker process has its own pools: at most `POOL.max_size` connections
+per alias. A request uses one connection per concurrently running ORM call,
+and a request inside `async with transaction.atomic()` holds one for the
+whole block. Budget:
+
+```
+web workers × max_size  +  Celery concurrency  +  management commands  +  headroom
+    <=  PostgreSQL max_connections   (or the PgBouncer pool size)
+```
+
+When the pool is exhausted, requests wait up to `timeout` seconds and then
+fail with `OperationalError`. That is back-pressure, not a leak. Watch
+`asyncdjango.db.pool_stats()` (from inside the event loop) to tune it.
+
+## Server
+
+Use an ASGI server with lifespan support, and point it at
+`asyncdjango.asgi.get_asgi_application()`:
+
+```console
+gunicorn project.asgi:application -k uvicorn.workers.UvicornWorker --workers 4
+uvicorn project.asgi:application --workers 4 --lifespan on
+```
+
+At startup the handler opens the pools (without waiting for connections) and
+loads content types into Django's cache. At shutdown it closes the pools. If
+a server sends no lifespan events, pools open on first use. A loop that ends
+without closing its pools still closes them while `asyncio.run()` shuts
+down.
+
+One worker process handles many concurrent requests on one core. Run about
+one worker per core, as with any asyncio server. CPU-heavy serialization
+scales with workers, not with concurrency inside a worker.
+
+Scripts and management commands can use the native ORM inside
+`asyncio.run(...)`. Call `await asyncdjango.db.close_pools()` at the end to
+avoid shutdown warnings.
+
+## Security
+
+- asyncdjango does not change how queries are built: Django's compiler emits
+  parameterized SQL, and psycopg binds parameters client-side as in sync
+  Django. Raw SQL with `extra()`/`raw()` has the same injection rules as
+  Django.
+- Connection settings come from `DATABASES`; use `OPTIONS` for TLS
+  (`sslmode="verify-full"`, `sslrootcert=...`). Credentials are not logged.
+- `SET ROLE` (`OPTIONS["assume_role"]`) and other session state persist on
+  pooled connections. Do not change roles or `search_path` per request
+  without resetting them on every checkout.
+- The pool limit is also a protection: a flood of slow requests queues for
+  connections instead of exhausting PostgreSQL. Pair it with server-side
+  `statement_timeout` and an HTTP-level timeout.
+- A cancelled request (client disconnect) rolls back its transaction, and
+  psycopg cancels the running statement.
+
+## Migrations
+
+Unchanged: `makemigrations` and `migrate` are Django's synchronous commands
+and do not use the native path. Run them as before.
+
+## Observability
+
+- `asyncdjango.db.pool_stats()` returns psycopg pool counters per alias.
+- `connection.execute_wrapper()` installed from a `connection_created`
+  receiver sees every native query (for metrics or tracing).
+- `asyncdjango.diagnostics.EventLoopBlockDetector` and
+  `ThreadOffloadDetector` help find blocking calls and thread hops in tests.

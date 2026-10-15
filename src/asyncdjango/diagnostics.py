@@ -1,8 +1,9 @@
-"""Development diagnostic for blocking work on an asyncio event loop."""
+"""Development diagnostics: event-loop stalls and worker-thread offloading."""
 
 from __future__ import annotations
 
 import asyncio
+import functools
 
 
 class EventLoopBlockDetector:
@@ -46,3 +47,56 @@ class EventLoopBlockDetector:
             expected = loop.time() + self.interval
             await asyncio.sleep(self.interval)
             self.max_lag = max(self.max_lag, loop.time() - expected)
+
+
+class ThreadOffloadDetector:
+    """Record or forbid ``loop.run_in_executor()`` calls while active.
+
+    ``asgiref.sync.sync_to_async`` and ``asyncio.to_thread`` both reach a
+    worker thread through the running loop's ``run_in_executor``, so this
+    detects Django's thread-based async ORM methods as well. With
+    ``forbid=True`` (the default) the offloaded call raises instead of running.
+
+    ``allow`` names callables that may still use a thread. By default that is
+    ``getaddrinfo``: asyncio resolves host names in its executor, which psycopg
+    does once per new physical connection (not per query). Configure HOST as
+    an IP address to avoid even that.
+    """
+
+    def __init__(self, *, forbid: bool = True,
+                 allow: frozenset[str] = frozenset({"getaddrinfo", "_getaddrinfo_debug"})) -> None:
+        self.forbid = forbid
+        self.allow = allow
+        self.calls: list[str] = []
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    async def __aenter__(self) -> ThreadOffloadDetector:
+        self._loop = asyncio.get_running_loop()
+        original = self._loop.run_in_executor
+
+        def run_in_executor(executor, func, *args):
+            target = func
+            while isinstance(target, functools.partial):
+                inner = getattr(target.func, "__qualname__", "")
+                if inner == "Context.run" and target.args:
+                    # asyncio.to_thread() submits partial(context.run, func, ...).
+                    target = target.args[0]
+                elif inner.endswith("SyncToAsync.thread_handler") and target.args:
+                    # sync_to_async submits partial(thread_handler, ..., child).
+                    target = target.args[-1]
+                else:
+                    target = target.func
+            # Never repr(): a bound QuerySet method would evaluate the query.
+            name = getattr(target, "__qualname__", None) or type(target).__qualname__
+            if name.rsplit(".", 1)[-1] in self.allow:
+                return original(executor, func, *args)
+            self.calls.append(name)
+            if self.forbid:
+                raise AssertionError(f"Work was offloaded to a worker thread: {name}")
+            return original(executor, func, *args)
+
+        self._loop.run_in_executor = run_in_executor
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        del self._loop.run_in_executor
