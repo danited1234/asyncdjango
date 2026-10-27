@@ -11,7 +11,7 @@ Django app on real Django models. See README.md for the architecture.
 - [x] Accidental synchronous ORM use from async code still raises `SynchronousOnlyOperation`.
 - [x] Pin the Django/DRF versions whose internals are patched or adapted; record every patch and adaptation with licenses (`docs/upstream.md`, `licenses/`).
 - [x] Prove behavior with live PostgreSQL integration tests.
-- [ ] Choose a license for asyncdjango itself before publishing.
+- [x] License asyncdjango under BSD-3-Clause, matching Django and DRF (`LICENSE`).
 
 ## 0. Native PostgreSQL execution
 

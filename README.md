@@ -179,6 +179,13 @@ The complete list is in [docs/compatibility.md](docs/compatibility.md).
 - [docs/benchmarks.md](docs/benchmarks.md): method and results.
 - [docs/upstream.md](docs/upstream.md): patched Django entry points, adapted
   upstream code, and licenses.
+- [docs/releasing.md](docs/releasing.md): tagging releases and publishing to
+  PyPI.
+
+## License
+
+BSD 3-Clause; see [LICENSE](LICENSE). Code adapted from Django and DRF keeps
+its upstream notices in [licenses/](licenses/).
 
 ## Development
 

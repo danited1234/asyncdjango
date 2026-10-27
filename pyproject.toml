@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,10 @@ version = "0.1.0.dev0"
 description = "A Django app that runs the async ORM and DRF-style views natively on the event loop"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "BSD-3-Clause"
+# LICENSE, plus upstream notices for code adapted from Django and DRF
+# (docs/upstream.md).
+license-files = ["LICENSE", "licenses/*"]
 dependencies = [
     "Django>=6.0,<6.1",
     "psycopg>=3.2",
@@ -19,10 +23,6 @@ dependencies = [
 drf = ["djangorestframework>=3.16,<3.17"]
 # Only for asyncdjango's own test suite (tests/test_channels.py).
 test = ["channels>=4.2"]
-
-[tool.setuptools]
-# Upstream notices for code adapted from Django and DRF (docs/upstream.md).
-license-files = ["licenses/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

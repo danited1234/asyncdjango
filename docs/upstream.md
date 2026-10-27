@@ -76,5 +76,6 @@ The ADRF-compatible public names (`adata`, `aget_object`, `perform_acreate`,
 the router's async action map, ...) follow adrf 0.1.12's API; no adrf source
 is included and adrf is not a dependency.
 
-This is a compliance checklist, not legal advice. asyncdjango itself has no
-license declared yet; choose one before publishing.
+This is a compliance checklist, not legal advice. asyncdjango itself is
+released under the BSD 3-Clause license (`LICENSE`), the same license as
+Django and DRF.

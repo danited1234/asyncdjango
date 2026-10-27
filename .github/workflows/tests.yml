@@ -2,7 +2,10 @@ name: tests
 
 on:
   push:
+    # Release tags run this suite through release.yml instead.
+    branches: ["**"]
   pull_request:
+  workflow_call:
   workflow_dispatch:
     inputs:
       benchmark:
