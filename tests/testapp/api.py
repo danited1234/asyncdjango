@@ -1,4 +1,4 @@
-"""DRF code written the way the CRM writes it, on asyncdjango.rest_framework."""
+"""DRF code written the way production ADRF projects write it, on asyncdjango.rest_framework."""
 
 from asgiref.sync import async_to_sync
 from rest_framework import exceptions, permissions, throttling
@@ -40,7 +40,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
 
 class StaffUser:
-    """Stand-in for the CRM's CustomUser returned by its JWT authentication."""
+    """Stand-in for a custom user model returned by JWT authentication."""
 
     is_authenticated = True
 
@@ -48,9 +48,9 @@ class StaffUser:
         self.organization = organization
 
 
-class CRMStyleJWTAuthentication(BaseAuthentication):
-    """Mirrors myproject.middleware.JWTAuthentication: sync authenticate()
-    wrapping an async helper with async_to_sync."""
+class AsyncHelperJWTAuthentication(BaseAuthentication):
+    """A common JWT pattern: sync authenticate() wrapping an async helper
+    with async_to_sync."""
 
     def authenticate(self, request):
         return async_to_sync(self._authenticate_async)(request)
@@ -109,7 +109,7 @@ class EmployeeList(generics.ListCreateAPIView):
 
 
 class Me(APIView):
-    authentication_classes = [CRMStyleJWTAuthentication]
+    authentication_classes = [AsyncHelperJWTAuthentication]
     permission_classes = [AsyncIsStaff]
     throttle_classes = [LoggingThrottle]
 

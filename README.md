@@ -22,11 +22,38 @@ needs a thread per in-flight request, and makes Django's thread-local
 connections hard to manage (`CONN_MAX_AGE = 0` to avoid orphaned connections,
 so a new connection per request).
 
-On the benchmark in [`benchmarks/`](benchmarks/) (an ADRF-style endpoint that
-fetches, counts, and serializes 20 related rows; same code, same database),
-asyncdjango served about 15 times the requests per second of ADRF at a
-twentieth of the CPU per request, on one thread instead of one per request.
-See [docs/benchmarks.md](docs/benchmarks.md) for the numbers and method.
+## Benchmarks
+
+[`benchmarks/`](benchmarks/) runs the same endpoints on five stacks against
+the same PostgreSQL data and checks that every stack returns identical
+responses: asyncdjango with its DRF-style API or with plain Django views,
+ADRF, synchronous DRF on a threaded WSGI server, and Django's own async views.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-throughput-dark.svg">
+  <img alt="Requests per second at 50 concurrent clients for each stack and scenario" src="docs/images/bench-throughput-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-cpu-dark.svg">
+  <img alt="CPU time per request at 50 concurrent clients for each stack and scenario" src="docs/images/bench-cpu-light.svg">
+</picture>
+
+At 50 concurrent clients on a 4-core laptop:
+
+- **Compared with ADRF**, the same view and serializer code served about 10
+  times the requests on the read endpoint (at a twelfth of the CPU per
+  request) and twice as many on the write endpoint.
+- **Compared with Django's async views**, plain Django views served about 30%
+  more requests at 35–40% less CPU per request.
+- **Compared with synchronous DRF**, throughput was about the same, on one
+  thread instead of one per in-flight request (56 threads).
+- **For a request that waits 50 ms on the database**, every stack is limited
+  by the 20-connection pool (270–306 req/s).
+
+Results vary between runs and machines. See
+[docs/benchmarks.md](docs/benchmarks.md) for the method, all results with
+their spread, and how to run the benchmark on your own hardware.
 
 ## How it works
 
@@ -201,7 +228,7 @@ The test runner creates and drops `test_<database name>`.
 GitHub Actions (`.github/workflows/tests.yml`) runs the suite on every push
 and pull request against live PostgreSQL 14 and 18 service containers, on
 Python 3.12, 3.13, and 3.14. Run the workflow manually with "benchmark"
-checked to also run the ADRF comparison; the table appears in the job
+checked to also run the five-stack benchmark; the table appears in the job
 summary. The suite checks
 that no request or ORM path offloads to a thread (`ThreadOffloadDetector`)
 and that every Django async method that would use a thread is patched.

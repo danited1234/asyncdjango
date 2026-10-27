@@ -2,8 +2,8 @@
 
 This guide assumes a Django 6.0 project on PostgreSQL with psycopg 3, using
 adrf views and serializers and `sync_to_async` around ORM code, which is the
-shape of the CRM back end. Work on a branch and run your test suite after
-each step.
+usual shape of an async DRF back end. Work on a branch and run your test
+suite after each step.
 
 ## 1. Install the app and the ASGI handler
 
@@ -117,9 +117,9 @@ paginators, serializer fields, `validate_*` methods, model `save()`/`delete()`
 overrides, and signal receivers. For each one, check that it does not block
 on I/O other than the database:
 
-- **JWT authentication** that wraps an async helper in `async_to_sync` (like
-  `myproject.middleware.JWTAuthentication`) works unchanged. Simpler is to
-  make `authenticate()` an `async def`.
+- **JWT authentication** whose synchronous `authenticate()` wraps an async
+  helper in `async_to_sync` works unchanged. Simpler is to make
+  `authenticate()` an `async def`.
 - **Throttles** using Django's cache with a synchronous Redis client block the
   loop for each round trip. Write an async throttle (`async def
   allow_request`) on an async Redis client, or accept the short stall.
@@ -144,8 +144,8 @@ middleware still run in Django's per-request thread. Options:
   `django-cors-headers` 4 are async-capable.
 - Middleware that defines an `__acall__` path must also declare
   `sync_capable = True` and `async_capable = True`. Without the flag Django
-  treats the class as sync-only and never calls `__acall__`. The CRM's
-  `RequestIDMiddleware` and `StructuredLoggingMiddleware` currently lack it.
+  treats the class as sync-only and never calls `__acall__`. Request-ID and
+  logging middleware written in this style often lack the flag.
 - Middleware whose only I/O is the database can be listed in
   `ASYNCDJANGO["NATIVE_SYNC_MIDDLEWARE"]` to run natively.
 - WhiteNoise is sync-only and reads files, so do not list it. Serve static files from a

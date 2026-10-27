@@ -2,7 +2,7 @@
 
 The application mirrors a typical Channels project: HTTP and lifespan go to
 NativeASGIHandler, websockets go through an authentication middleware that
-looks the user up with the async ORM, as the CRM's JWTWebSocketMiddleware does.
+looks the user up with the async ORM, as JWT websocket middleware usually does.
 """
 
 import json

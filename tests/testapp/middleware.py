@@ -46,7 +46,7 @@ def async_function_middleware(get_response):
 
 
 class DualModeMiddleware:
-    """Class-style middleware with sync and async paths (the CRM's style)."""
+    """Class-style middleware with sync and async paths (a common style)."""
 
     sync_capable = True
     async_capable = True

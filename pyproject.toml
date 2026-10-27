@@ -12,6 +12,22 @@ license = "BSD-3-Clause"
 # LICENSE, plus upstream notices for code adapted from Django and DRF
 # (docs/upstream.md).
 license-files = ["LICENSE", "licenses/*"]
+keywords = ["django", "asyncio", "orm", "postgresql", "psycopg", "djangorestframework", "adrf"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: AsyncIO",
+    "Framework :: Django",
+    "Framework :: Django :: 6.0",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Internet :: WWW/HTTP",
+]
 dependencies = [
     "Django>=6.0,<6.1",
     "psycopg>=3.2",
@@ -23,6 +39,14 @@ dependencies = [
 drf = ["djangorestframework>=3.16,<3.17"]
 # Only for asyncdjango's own test suite (tests/test_channels.py).
 test = ["channels>=4.2"]
+# Only for benchmarks/ (the ADRF baseline and the charts).
+bench = ["adrf==0.1.12", "matplotlib>=3.8"]
+
+[project.urls]
+Homepage = "https://github.com/danited1234/asyncdjango"
+Documentation = "https://github.com/danited1234/asyncdjango/blob/main/docs/guide.md"
+Issues = "https://github.com/danited1234/asyncdjango/issues"
+Changelog = "https://github.com/danited1234/asyncdjango/releases"
 
 [tool.setuptools.packages.find]
 where = ["src"]

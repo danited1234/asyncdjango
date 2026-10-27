@@ -51,11 +51,12 @@ Django app on real Django models. See README.md for the architecture.
 
 ## 3. Compatibility and release
 
-- [x] Compare correctness and concurrency against Django/ADRF under the same PostgreSQL workload (`benchmarks/`, `docs/benchmarks.md`; identical response fingerprints).
+- [x] Compare correctness and concurrency against Django, DRF, and ADRF under the same PostgreSQL workload (`benchmarks/`, five stacks, `--repeat` medians, README charts; identical response fingerprints).
+- [ ] Find why `asyncdjango-drf` at 100 concurrent clients is bimodal (rounds of 67-264 req/s while plain `asyncdjango` stays at 270-390; `docs/benchmarks.md`). cProfile on Windows was too noisy to separate good and bad rounds; try Linux and py-spy.
 - [x] Document configuration, migrations, deployment, security, and supported versions (`docs/deployment.md`, `docs/compatibility.md`, `docs/porting.md`).
-- [ ] Port a slice of the CRM on a branch of the CRM repository (imports, `sync_to_async` → `ais_valid`/`adata`/`sync_to_native`, `async_capable` on its two logging middlewares) and run its test suite.
+- [ ] Port a slice of a production ADRF application (imports, `sync_to_async` → `ais_valid`/`adata`/`sync_to_native`, `async_capable` on its middleware) and run its test suite.
 - [x] GitHub Actions workflow: suite on Python 3.12-3.14 x PostgreSQL 14/18 service containers; optional benchmark job.
 - [ ] Confirm the first Linux CI run is green (verified locally on Windows with Python 3.12 and 3.13 only).
 - [ ] Benchmark with a real server (uvicorn + an HTTP load generator) on Linux.
 - [ ] Decide whether to support Django 5.2 LTS (untested; the patched internals are similar).
-- [ ] Define release criteria and publish only after the CRM slice runs in staging.
+- [ ] Define release criteria for 1.0 (a production application running on it in staging).

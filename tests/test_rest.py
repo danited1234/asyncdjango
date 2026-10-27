@@ -61,7 +61,7 @@ class RestTests(OffloadGuardedTestCase):
         removed = await self.client.delete(f"/api/employees/{report.pk}/")
         self.assertEqual(removed.status_code, 204)
 
-    async def test_crm_style_auth_async_permission_and_sync_throttle(self):
+    async def test_jwt_style_auth_async_permission_and_sync_throttle(self):
         await Organization.objects.acreate(name="Acme")
         anonymous = await self.client.get("/api/me/")
         self.assertEqual(anonymous.status_code, 401)
