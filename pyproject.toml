@@ -17,6 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 drf = ["djangorestframework>=3.16,<3.17"]
+# Only for asyncdjango's own test suite (tests/test_channels.py).
+test = ["channels>=4.2"]
 
 [tool.setuptools]
 # Upstream notices for code adapted from Django and DRF (docs/upstream.md).

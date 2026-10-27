@@ -20,6 +20,8 @@ Django app on real Django models. See README.md for the architecture.
 - [x] Native `DatabaseWrapper` (Django's own, with an async connection facade), including server-side cursors.
 - [x] Task-owned scopes; `connections[alias]` routed to the active scope; cross-task use of a transaction rejected.
 - [x] ASGI lifespan opens and closes pools; unclosed pools no longer hang `asyncio.run()` shutdown.
+- [x] Loop shutdown closes every connection a pool opened (psycopg_pool's `close()` aborts on its cancelled workers and left idle connections open: one leak per `asyncio.run()`).
+- [x] `async_to_sync()` from synchronous code (Celery tasks, scripts, Django's `TestCase`) runs ORM calls on the caller's thread and connection instead of a pool per call; `NATIVE_IN_ASYNC_TO_SYNC` opts back in.
 - [x] Cancellation (client disconnect, task cancel) rolls back and returns the connection.
 - [ ] Verify the thread-free query cancel path with libpq 17+ (psycopg-binary 3.3.2 bundles libpq 16.9, which cancels from a thread).
 - [ ] Reuse `DatabaseWrapper` objects across scopes if profiling on Linux shows the per-call construction matters.
@@ -45,7 +47,7 @@ Django app on real Django models. See README.md for the architecture.
 - [x] User guide (`docs/guide.md`), including async service clients and middleware.
 - [x] `asyncdjango.rest_framework` with ADRF's API: APIView, generics, mixins, viewsets, routers, serializers (async method fields, nested, many), `@api_view`; sync and async auth/permission/throttle/filter/paginator hooks.
 - [x] Test helpers: `NativeTestCase` (rollback), `NativeTransactionTestCase` (flush), in-process `ASGIClient`.
-- [ ] Django Channels: document and test routing the `http` scope to `NativeASGIHandler`.
+- [x] Django Channels: document and test routing the `http` and `lifespan` scopes to `NativeASGIHandler`; websocket consumers and middleware on the native ORM.
 
 ## 3. Compatibility and release
 

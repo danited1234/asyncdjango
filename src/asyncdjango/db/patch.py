@@ -10,6 +10,10 @@ awaited on the event loop.
 Each replacement checks the target alias first. A non-PostgreSQL alias raises
 ``NativeAsyncUnsupported``, or with ``ALLOW_SYNC_FALLBACK`` calls Django's
 original thread-based method and emits ``SyncFallbackWarning``.
+
+On an event loop that ``async_to_sync()`` created for a synchronous caller
+(a Celery task, for example) the replacements call Django's original method,
+which runs on that caller's thread; see ``scope.in_sync_caller_loop()``.
 """
 
 from __future__ import annotations
@@ -28,7 +32,14 @@ from django.db.models.fields import related_descriptors
 from .. import conf
 from ..exceptions import NativeAsyncUnsupported
 from .pool import is_native_alias
-from .scope import NativeScope, _current_scope, active_scope, run_in_scope, run_native
+from .scope import (
+    NativeScope,
+    _current_scope,
+    active_scope,
+    in_sync_caller_loop,
+    run_in_scope,
+    run_native,
+)
 
 QUERYSET_METHODS = {
     "aaggregate": "aggregate",
@@ -117,6 +128,8 @@ def _native(async_name: str, sync_name: str, original: Callable[..., Any],
             aliases: Callable[..., set[str]]) -> Callable[..., Any]:
     @functools.wraps(original)
     async def method(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if in_sync_caller_loop():
+            return await original(self, *args, **kwargs)
         targets = aliases(self, kwargs)
         if not all(is_native_alias(alias) for alias in targets):
             return await _fallback(original, targets, (self, *args), kwargs)
@@ -128,6 +141,8 @@ def _native(async_name: str, sync_name: str, original: Callable[..., Any],
 
 def _native_queryset_aiter(original: Callable[..., Any]) -> Callable[..., Any]:
     def __aiter__(self: Any) -> Any:
+        if in_sync_caller_loop():
+            return original(self)
         if not is_native_alias(self.db):
             if not conf.get("ALLOW_SYNC_FALLBACK"):
                 raise NativeAsyncUnsupported(
@@ -156,6 +171,10 @@ def _native_aiterator(original: Callable[..., Any]) -> Callable[..., Any]:
         """Stream rows natively, using a server-side cursor when enabled."""
         if chunk_size <= 0:
             raise ValueError("Chunk size must be strictly positive.")
+        if in_sync_caller_loop():
+            async for item in original(self, chunk_size=chunk_size):
+                yield item
+            return
         if not is_native_alias(self.db):
             if not conf.get("ALLOW_SYNC_FALLBACK"):
                 raise NativeAsyncUnsupported(

@@ -23,8 +23,24 @@ application = get_asgi_application()
 ```
 
 From this point every `await X.objects.aget()`, `asave()`, `async for`, and
-so on is native. If the project uses Channels, route the `"http"` scope to
-this application.
+so on is native. If the project uses Channels, route both the `"http"` and
+the `"lifespan"` scope to this application (the router rejects scope types it
+has no entry for):
+
+```python
+django_app = get_asgi_application()
+
+from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
+
+application = ProtocolTypeRouter({
+    "http": django_app,
+    "lifespan": django_app,
+    "websocket": JWTWebSocketMiddleware(URLRouter(websocket_urlpatterns)),
+})
+```
+
+Websocket middleware and async consumers that call `aget()` and friends
+become native too.
 
 Run `python manage.py check`. Look at the `asyncdjango.W002` warnings, which
 list middleware that still runs in a thread (see step 5).
@@ -151,8 +167,11 @@ middleware still run in Django's per-request thread. Options:
 ## 7. Tests
 
 Django's `TestCase` (and DRF's `APITestCase`) wrap each test in a transaction
-on the synchronous connection, which native queries cannot see. For async
-tests use:
+on the synchronous connection. Existing tests that drive async services with
+`async_to_sync(...)` keep working: those ORM calls run on the test's
+connection, as in a Celery task (step 9). They do not exercise the native
+path, though. Native queries cannot see that transaction, so for async tests
+of native code use:
 
 ```python
 from asyncdjango.test import NativeTestCase
@@ -184,5 +203,17 @@ Django's thread-based behavior, and `django.db.transaction.atomic` does not
 support `async with`; use `asyncdjango.db.transaction.atomic` for native
 transactions.
 
-Celery workers and management commands are unaffected: they use Django's
-synchronous ORM as before.
+## 9. Celery and management commands
+
+Synchronous ORM code in Celery tasks and management commands is unchanged.
+Tasks that call async services through `async_to_sync(service)()` also keep
+working without changes: asgiref creates an event loop for each such call,
+and asyncdjango runs the ORM calls made there (`aget`, `asave`, `async with
+transaction.atomic()`, `sync_to_native`) on the task's thread with its Django
+connection, as plain Django does. No pool is created per task, Celery's
+connection cleanup still applies, and `on_commit` callbacks registered inside
+`async with transaction.atomic()` run when that block commits.
+
+A management command that runs its own long-lived loop with `asyncio.run()`
+gets the native path and a connection pool for that loop; count it in the
+connection budget ([deployment.md](deployment.md#connection-budget)).

@@ -17,6 +17,10 @@ ASYNCDJANGO = {
     # Raise NativeAsyncUnsupported (False) or fall back to Django's thread
     # implementation with a SyncFallbackWarning (True) for non-native aliases.
     "ALLOW_SYNC_FALLBACK": False,
+    # async_to_sync() called from synchronous code (Celery tasks, scripts):
+    # run ORM calls on the calling thread's Django connection (False) or
+    # natively with a pool for that call's event loop (True).
+    "NATIVE_IN_ASYNC_TO_SYNC": False,
     # psycopg_pool.AsyncConnectionPool options for every alias.
     "POOL": {"min_size": 1, "max_size": 10, "timeout": 30.0},
     # Per-alias overrides merged over POOL.
@@ -56,6 +60,10 @@ web workers × max_size  +  Celery concurrency  +  management commands  +  headr
     <=  PostgreSQL max_connections   (or the PgBouncer pool size)
 ```
 
+Celery workers keep Django's one connection per worker thread: async
+services they call through `async_to_sync` use it rather than a pool (see
+the [guide](guide.md#celery-tasks-and-other-synchronous-callers)).
+
 When the pool is exhausted, requests wait up to `timeout` seconds and then
 fail with `OperationalError`. That is back-pressure, not a leak. Watch
 `asyncdjango.db.pool_stats()` (from inside the event loop) to tune it.
@@ -73,16 +81,22 @@ uvicorn project.asgi:application --workers 4 --lifespan on
 At startup the handler opens the pools (without waiting for connections) and
 loads content types into Django's cache. At shutdown it closes the pools. If
 a server sends no lifespan events, pools open on first use. A loop that ends
-without closing its pools still closes them while `asyncio.run()` shuts
-down.
+without closing its pools still closes them, and every connection they
+opened, while `asyncio.run()` shuts down.
+
+With Django Channels, map both `"http"` and `"lifespan"` in
+`ProtocolTypeRouter` to the handler ([guide](guide.md#asgi-entry-point));
+the router rejects scope types it has no entry for.
 
 One worker process handles many concurrent requests on one core. Run about
 one worker per core, as with any asyncio server. CPU-heavy serialization
 scales with workers, not with concurrency inside a worker.
 
 Scripts and management commands can use the native ORM inside
-`asyncio.run(...)`. Call `await asyncdjango.db.close_pools()` at the end to
-avoid shutdown warnings.
+`asyncio.run(...)`, which creates a pool for that loop. Call `await
+asyncdjango.db.close_pools()` at the end to avoid shutdown warnings. Code
+they run through `async_to_sync(...)` uses the command's own Django
+connection instead.
 
 ## Security
 

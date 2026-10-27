@@ -95,6 +95,38 @@ from asyncdjango.asgi import get_asgi_application
 application = get_asgi_application()
 ```
 
+With Django Channels, give the handler both the `http` and the `lifespan`
+scope. `ProtocolTypeRouter` rejects scope types it has no entry for, so
+without `"lifespan"` the pools are not opened at startup or closed at
+shutdown (they then open on first use):
+
+```python
+# myproject/asgi.py
+import os
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "myproject.settings")
+
+from asyncdjango.asgi import get_asgi_application
+
+django_app = get_asgi_application()  # sets up Django before consumers import models
+
+from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
+
+from myapp.routing import websocket_urlpatterns  # noqa: E402
+
+application = ProtocolTypeRouter({
+    "http": django_app,
+    "lifespan": django_app,
+    "websocket": URLRouter(websocket_urlpatterns),
+})
+```
+
+Async consumers can use the native ORM directly (`await
+Room.objects.aget(...)`, `async with transaction.atomic()`), as can
+authentication middleware in front of them. Channels' own
+`database_sync_to_async` keeps running in a thread; replace it with
+`sync_to_native` for ORM-only functions.
+
 ### Run
 
 ```console
@@ -345,6 +377,37 @@ async def report_view(request, pk):
 `sync_to_async` runs in a thread with Django's per-thread connection, so it
 does not see an open native transaction. Keep that in mind when mixing them.
 
+### Celery tasks and other synchronous callers
+
+Synchronous code often reuses async services through `async_to_sync`:
+
+```python
+@shared_task
+def verify_payments():
+    async_to_sync(run_verification)()     # an async service also used by views
+```
+
+asgiref runs each such call on a new event loop that exists only for that
+call, while the calling thread waits. Inside it, every ORM call (`aget`,
+`asave`, `async with transaction.atomic()`, `sync_to_native`, ...) runs on the
+calling thread with its Django connection, exactly as without asyncdjango. No
+connection pool is created per call, Celery's connection cleanup after each
+task still applies, and the code sees transactions open on that thread (as in
+a test on Django's `TestCase`). The calling thread is idle while it waits, so
+this adds no thread. Like `sync_to_async` in plain Django, concurrent calls
+in that loop (`asyncio.gather`) take turns on the thread.
+
+This applies to `async_to_sync` called from synchronous code: Celery tasks,
+management commands, scripts, and Django's test cases. Inside an ASGI server,
+`async_to_sync` reaches the server's loop and stays native. A long-running
+program that starts its own loop with `asyncio.run()` also gets the native
+path with a connection pool.
+
+Set `ASYNCDJANGO["NATIVE_IN_ASYNC_TO_SYNC"] = True` to use the native path in
+these loops too. Each call then opens a pool for the loop's lifetime (on
+Windows, the loop must be a selector loop) and its queries do not see the
+calling thread's transaction.
+
 ## 7. Middleware
 
 ### What runs where
@@ -548,8 +611,12 @@ webhooks from Celery, or from `transaction.on_commit`.
 ## 10. Testing
 
 Django's `TestCase` wraps each test in a transaction on its synchronous
-connection, which native queries cannot see. Use asyncdjango's test cases for
-async tests, and run them with Django's test runner as usual:
+connection. Its async test methods (and synchronous tests that call async code
+through `async_to_sync`) run their ORM calls on that connection, as described
+in [Celery tasks and other synchronous callers](#celery-tasks-and-other-synchronous-callers),
+so they pass but do not exercise the native path. Native queries cannot see
+that transaction. To test the native path, use asyncdjango's test cases, and
+run them with Django's test runner as usual:
 
 ```python
 from asyncdjango.test import ASGIClient, NativeTestCase, NativeTransactionTestCase
@@ -593,6 +660,7 @@ async def test_no_threads(self):
 ASYNCDJANGO = {
     "PATCH_ORM": True,                 # native async ORM for all models
     "ALLOW_SYNC_FALLBACK": False,      # non-PostgreSQL aliases: raise (False) or thread + warning (True)
+    "NATIVE_IN_ASYNC_TO_SYNC": False,  # async_to_sync() from sync code (Celery): caller's thread (False) or native (True)
     "POOL": {"min_size": 1, "max_size": 10, "timeout": 30.0},
     "POOLS": {},                       # per-alias overrides, e.g. {"replica": {"max_size": 4}}
     "NATIVE_SYNC_MIDDLEWARE": [],      # extra middleware classes to run natively
@@ -611,7 +679,8 @@ Pool sizing, servers, security, and observability are covered in
 | `CrossTaskConnectionError` | Concurrent tasks inside `transaction.atomic()`. Await sequentially inside the block, or move the concurrency outside it. |
 | `NativeAsyncUnsupported` | The query targets a non-PostgreSQL (or psycopg2) alias. Route it to PostgreSQL, or enable `ALLOW_SYNC_FALLBACK`. |
 | `OperationalError: couldn't get a connection after 30.00 sec` | Pool exhausted: too many concurrent requests holding connections, or long transactions. Raise `POOL.max_size` (within PostgreSQL's `max_connections`) or shorten transactions. |
-| `Psycopg cannot use the 'ProactorEventLoop'` | Windows default event loop. Use a selector event loop, WSL, or Docker. |
+| `Psycopg cannot use the 'ProactorEventLoop'` | Windows default event loop. Use a selector event loop, WSL, or Docker. (`async_to_sync` from synchronous code is not affected unless `NATIVE_IN_ASYNC_TO_SYNC` is on.) |
+| Lifespan not supported / pools open only on the first request under Channels | `ProtocolTypeRouter` has no `"lifespan"` entry. Map it to the same handler as `"http"` ([§2](#asgi-entry-point)). |
 | Requests stall under load | Something blocks the loop: a sync client in a hook, heavy CPU work, or a large synchronous render. Find it with `EventLoopBlockDetector`; use async clients, `sync_to_async`, or more workers. |
 | `manage.py check` W002/W003 | Middleware running in a thread. See [§7](#7-middleware). |
 | Native queries missing from `connection.queries` / debug toolbar | They are logged per native connection. Use an execute wrapper from `connection_created` for metrics. |

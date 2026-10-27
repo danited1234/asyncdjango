@@ -12,6 +12,11 @@ DEFAULTS: dict[str, Any] = {
     # Use Django's sync_to_async implementation, with a warning, when an
     # operation cannot run natively. Off by default: such operations raise.
     "ALLOW_SYNC_FALLBACK": False,
+    # Run the native path on event loops that async_to_sync() creates for a
+    # synchronous caller (Celery tasks, scripts, async tests on Django's
+    # TestCase). Off by default: ORM calls there use the caller thread's own
+    # Django connection, as in plain Django, instead of a pool per call.
+    "NATIVE_IN_ASYNC_TO_SYNC": False,
     # psycopg_pool.AsyncConnectionPool options applied to every alias.
     "POOL": {"min_size": 1, "max_size": 10, "timeout": 30.0},
     # Per-alias overrides merged over POOL, e.g. {"replica": {"max_size": 4}}.

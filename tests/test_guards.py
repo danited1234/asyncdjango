@@ -156,14 +156,63 @@ asyncio.run(main(), loop_factory=loop_factory)
 """
 
 
+SCRIPT_REPEATED_LOOPS = """
+import asyncio, os, sys, time, uuid, warnings
+os.environ["DJANGO_SETTINGS_MODULE"] = "tests.settings"
+if sys.platform == "win32":
+    # async_to_sync() starts its loops with asyncio.run() and the default policy.
+    warnings.simplefilter("ignore", DeprecationWarning)
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+import django
+from django.conf import settings
+django.setup()
+name = "asyncdjango-" + uuid.uuid4().hex[:12]
+settings.DATABASES["default"].setdefault("OPTIONS", {})["application_name"] = name
+settings.ASYNCDJANGO = {"POOL": {"min_size": 3, "max_size": 8},
+                        "NATIVE_IN_ASYNC_TO_SYNC": True}
+from asgiref.sync import async_to_sync
+from django.db import connection
+from asyncdjango import sync_to_native
+
+def query():
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 1")
+        return cursor.fetchone()[0]
+
+async def main():
+    return await sync_to_native(query)()
+
+for _ in range(3):
+    assert asyncio.run(main()) == 1
+    assert async_to_sync(main)() == 1
+for _ in range(50):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM pg_stat_activity "
+                       "WHERE application_name = %s AND pid <> pg_backend_pid()", [name])
+        left = cursor.fetchone()[0]
+    if not left:
+        break
+    time.sleep(0.1)
+print(left)
+"""
+
+
 class ShutdownTests(unittest.TestCase):
-    def test_asyncio_run_exits_without_closing_pools(self):
+    def run_script(self, script):
         import os
         import subprocess
         import sys
 
         env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
-        completed = subprocess.run([sys.executable, "-c", SCRIPT_WITHOUT_CLOSE],
+        completed = subprocess.run([sys.executable, "-c", script],
                                    capture_output=True, text=True, timeout=60, env=env)
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "1")
+        return completed.stdout.strip()
+
+    def test_asyncio_run_exits_without_closing_pools(self):
+        self.assertEqual(self.run_script(SCRIPT_WITHOUT_CLOSE), "1")
+
+    def test_loop_shutdown_closes_every_pooled_connection(self):
+        # asyncio.run() cancels the pool's workers along with everything else;
+        # connections must not outlive the loop (one leaked per Celery task).
+        self.assertEqual(self.run_script(SCRIPT_REPEATED_LOOPS), "0")

@@ -21,6 +21,10 @@ import sys
 from types import FrameType
 from typing import Any, Callable, TypeVar
 
+from asgiref.sync import AsyncToSync
+
+from .. import conf
+from .._threads import run_in_caller_thread
 from ..exceptions import CrossTaskConnectionError
 from .bridge import greenlet_spawn, in_native_context
 from .pool import is_native_alias
@@ -140,12 +144,35 @@ async def run_in_scope(scope: NativeScope, fn: Callable[..., T], /,
         _current_scope.reset(token)
 
 
+def in_sync_caller_loop() -> bool:
+    """Whether ORM calls should run on the synchronous caller's thread.
+
+    True on an event loop that ``async_to_sync()`` created because a
+    synchronous thread called it (a Celery task, a management command, an async
+    test on Django's ``TestCase``), unless ``NATIVE_IN_ASYNC_TO_SYNC`` is set.
+    Such a loop lives for one call: a connection pool would be created and torn
+    down every time, and the caller's own connection (and any transaction open
+    on it) would be invisible to native queries. Its thread is idle until the
+    loop finishes, so running the ORM there costs no extra thread.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return (loop in AsyncToSync.loop_thread_executors
+            and not conf.get("NATIVE_IN_ASYNC_TO_SYNC"))
+
+
 async def run_native(fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
     """Run synchronous ORM code on the event loop with native async I/O.
 
     Uses the task's active scope (inside ``transaction.atomic()``) or a
-    temporary one whose connections are returned to the pool afterwards.
+    temporary one whose connections are returned to the pool afterwards. On a
+    loop made by ``async_to_sync()`` for a synchronous caller, runs ``fn`` on
+    that caller's thread instead (see ``in_sync_caller_loop()``).
     """
+    if in_sync_caller_loop():
+        return await run_in_caller_thread(fn, *args, **kwargs)
     scope = active_scope()
     if scope is not None:
         return await run_in_scope(scope, fn, *args, **kwargs)
@@ -163,6 +190,9 @@ def sync_to_native(fn: Callable[..., T]) -> Callable[..., Any]:
     active ``transaction.atomic()`` block. Use it only for code whose blocking
     work is database access: other blocking I/O (HTTP clients, file or cache
     access) would stall the event loop for every request.
+
+    Under ``async_to_sync()`` from synchronous code (a Celery task) ``fn`` runs
+    on the calling thread, as ``sync_to_async`` would.
     """
 
     async def wrapper(*args: Any, **kwargs: Any) -> T:

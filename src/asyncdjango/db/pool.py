@@ -13,6 +13,7 @@ from typing import Any
 
 import psycopg
 from psycopg import sql as psycopg_sql
+from psycopg.pq import TransactionStatus
 from psycopg_pool import AsyncConnectionPool
 
 from .. import conf
@@ -25,6 +26,10 @@ _locks: weakref.WeakKeyDictionary[
 ] = weakref.WeakKeyDictionary()
 _guards: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop, asyncio.Task[None]
+] = weakref.WeakKeyDictionary()
+# Every physical connection each pool opened (added by its configure step).
+_connections: weakref.WeakKeyDictionary[
+    AsyncConnectionPool, weakref.WeakSet[psycopg.AsyncConnection]
 ] = weakref.WeakKeyDictionary()
 
 
@@ -41,8 +46,25 @@ async def _close_on_shutdown() -> None:
     except asyncio.CancelledError:
         pools = _pools.pop(loop, {})
         for pool in pools.values():
-            await pool.close(timeout=5)
+            await _close_at_shutdown(pool)
         raise
+
+
+async def _close_at_shutdown(pool: AsyncConnectionPool) -> None:
+    # asyncio.run() cancels the pool's worker tasks together with this one, so
+    # pool.close() raises CancelledError while waiting for them, before it
+    # closes its idle connections. Close the connections the pool opened
+    # ourselves: they belong to this loop and are unusable once it is gone.
+    # Skip those with an operation in flight: a cancelled task still waits on
+    # their socket, and closes them itself as it unwinds (configure() above,
+    # or a scope returning its connection to the closed pool).
+    try:
+        await pool.close(timeout=5)
+    except (asyncio.CancelledError, Exception):
+        pass
+    for connection in list(_connections.pop(pool, ())):
+        if connection.pgconn.transaction_status != TransactionStatus.ACTIVE:
+            await connection.close()
 
 
 def native_aliases() -> list[str]:
@@ -87,25 +109,34 @@ def _make_pool(alias: str) -> AsyncConnectionPool:
     set_time_zone_sql = wrapper.ops.set_time_zone_sql()
     role = options.get("assume_role")
     isolation_level = options.get("isolation_level")
+    opened: weakref.WeakSet[psycopg.AsyncConnection] = weakref.WeakSet()
 
     async def configure(connection: psycopg.AsyncConnection) -> None:
         # Mirrors DatabaseWrapper._configure_connection() and the isolation
         # level handling in get_new_connection(), once per physical connection.
-        if timezone_name and connection.info.parameter_status("TimeZone") != timezone_name:
-            await connection.execute(set_time_zone_sql, [timezone_name])
-        if role:
-            await connection.execute(
-                psycopg_sql.SQL("SET ROLE {}").format(psycopg_sql.Literal(role))
-            )
-        if isolation_level is not None:
-            await connection.set_isolation_level(psycopg.IsolationLevel(isolation_level))
+        opened.add(connection)
+        try:
+            if timezone_name and connection.info.parameter_status("TimeZone") != timezone_name:
+                await connection.execute(set_time_zone_sql, [timezone_name])
+            if role:
+                await connection.execute(
+                    psycopg_sql.SQL("SET ROLE {}").format(psycopg_sql.Literal(role))
+                )
+            if isolation_level is not None:
+                await connection.set_isolation_level(psycopg.IsolationLevel(isolation_level))
+        except BaseException:
+            # psycopg_pool does not close a connection whose configure step
+            # failed or was cancelled (for example when asyncio.run() cancels
+            # the pool's tasks at shutdown); the server session would leak.
+            await connection.close()
+            raise
 
     check = (
         AsyncConnectionPool.check_connection
         if wrapper.settings_dict["CONN_HEALTH_CHECKS"]
         else None
     )
-    return AsyncConnectionPool(
+    pool = AsyncConnectionPool(
         kwargs=kwargs,
         open=False,
         configure=configure,
@@ -113,6 +144,8 @@ def _make_pool(alias: str) -> AsyncConnectionPool:
         name=f"asyncdjango-{alias}",
         **conf.pool_options(alias),
     )
+    _connections[pool] = opened
+    return pool
 
 
 async def get_pool(alias: str) -> AsyncConnectionPool:

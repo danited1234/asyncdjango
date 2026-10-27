@@ -157,8 +157,12 @@ calls blocking libraries (HTTP clients, boto3, synchronous Redis).
 - Child tasks cannot share an open transaction (`CrossTaskConnectionError`).
 - Only PostgreSQL with psycopg 3 is native. Other aliases raise
   `NativeAsyncUnsupported` unless `ALLOW_SYNC_FALLBACK` is enabled.
-- Async tests must use `asyncdjango.test.NativeTestCase` or
-  `NativeTransactionTestCase` instead of Django's `TestCase`.
+- Async tests of native code must use `asyncdjango.test.NativeTestCase` or
+  `NativeTransactionTestCase`. On Django's `TestCase`, async code runs its ORM
+  calls on the test's connection instead, like Celery tasks that call async
+  services through `async_to_sync` (no pool per task).
+- With Django Channels, route both `"http"` and `"lifespan"` in
+  `ProtocolTypeRouter` to the handler.
 
 The complete list is in [docs/compatibility.md](docs/compatibility.md).
 
@@ -180,7 +184,7 @@ The complete list is in [docs/compatibility.md](docs/compatibility.md).
 
 ```console
 python -m venv .venv
-.venv/Scripts/python -m pip install -e ".[drf]"   # .venv/bin/python on Linux/macOS
+.venv/Scripts/python -m pip install -e ".[drf,test]"   # .venv/bin/python on Linux/macOS
 $env:ASYNCDJANGO_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/asyncdjango"
 .venv/Scripts/python -m django test tests --settings=tests.settings
 ```

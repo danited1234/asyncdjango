@@ -10,18 +10,25 @@ that transaction's connection.
 Synchronous helpers such as ``set_rollback()``, ``get_rollback()``, and
 ``on_commit()`` with a synchronous callback perform no I/O; Django's versions
 work unchanged inside an async atomic block and are re-exported here.
+
+On an event loop that ``async_to_sync()`` created for a synchronous caller (a
+Celery task, for example), ``async with atomic()`` runs Django's
+``__enter__``/``__exit__`` on that caller's thread instead, so the block uses
+the caller's Django connection like every other ORM call on that loop.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import inspect
 import logging
 import sys
 from typing import Any, Callable
 
+from asgiref.sync import async_to_sync
 from django.db import DEFAULT_DB_ALIAS
 from django.db import transaction as django_transaction
 from django.db.transaction import (  # noqa: F401  (re-exported)
@@ -33,14 +40,30 @@ from django.db.transaction import (  # noqa: F401  (re-exported)
     set_rollback,
 )
 
+from .._threads import run_in_caller_thread
 from ..exceptions import NativeAsyncUnsupported
 from .bridge import await_, in_native_context
 from .pool import is_native_alias
-from .scope import NativeScope, _current_scope, active_scope, run_in_scope
+from .scope import (
+    NativeScope,
+    _current_scope,
+    active_scope,
+    in_sync_caller_loop,
+    run_in_scope,
+)
 
 logger = logging.getLogger("asyncdjango.transaction")
 
 _background_tasks: set[asyncio.Task[Any]] = set()
+
+# Marks an entry made on the synchronous caller's thread (no native scope).
+_CALLER_THREAD = object()
+# The caller thread's Django connections, by alias, while an async atomic block
+# opened on a caller-thread loop is active: on_commit() runs on the event loop
+# and must register its callback on the caller's connection.
+_caller_thread_connections: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar("asyncdjango_caller_thread_connections", default=None)
+)
 
 
 class Atomic(django_transaction.Atomic):
@@ -48,6 +71,9 @@ class Atomic(django_transaction.Atomic):
 
     async def __aenter__(self) -> None:
         using = DEFAULT_DB_ALIAS if self.using is None else self.using
+        if in_sync_caller_loop():
+            await _enter_in_caller_thread(self, using)
+            return
         if not is_native_alias(using):
             raise NativeAsyncUnsupported(
                 f"async transaction.atomic() requires a psycopg 3 PostgreSQL "
@@ -70,7 +96,7 @@ class Atomic(django_transaction.Atomic):
         except BaseException:
             self._async_entries.remove(entry)
             if token is not None:
-                _reset_scope(token)
+                _reset(_current_scope, token)
                 await asyncio.shield(scope.aclose())
             raise
 
@@ -81,6 +107,9 @@ class Atomic(django_transaction.Atomic):
         entry = mine[-1] if mine else entries[-1]
         entries.remove(entry)
         owner, token, scope = entry
+        if scope is _CALLER_THREAD:
+            await _exit_in_caller_thread(self, owner, *token, exc_type, exc_value, traceback)
+            return
         if owner is not task:
             await self._abandoned_exit(token, scope)
             return
@@ -88,7 +117,7 @@ class Atomic(django_transaction.Atomic):
             await run_in_scope(scope, self.__exit__, exc_type, exc_value, traceback)
         finally:
             if token is not None:
-                _reset_scope(token)
+                _reset(_current_scope, token)
                 await asyncio.shield(scope.aclose())
 
     async def _abandoned_exit(self, token: Any, scope: NativeScope) -> None:
@@ -122,11 +151,41 @@ class Atomic(django_transaction.Atomic):
         return inner
 
 
-def _reset_scope(token: Any) -> None:
+async def _enter_in_caller_thread(atomic: Any, using: str) -> None:
+    # Module functions, not methods: patch.install() copies only the dunder
+    # methods onto Django's Atomic.
+    def enter() -> Any:
+        atomic.__enter__()
+        return get_connection(using)
+
+    connection = await run_in_caller_thread(enter)
+    token = _caller_thread_connections.set(
+        {**(_caller_thread_connections.get() or {}), using: connection})
+    entry = (asyncio.current_task(), (token, connection), _CALLER_THREAD)
+    atomic.__dict__.setdefault("_async_entries", []).append(entry)
+
+
+async def _exit_in_caller_thread(atomic: Any, owner: Any, token: Any, connection: Any,
+                                 exc_type: Any, exc_value: Any, traceback: Any) -> None:
     try:
-        _current_scope.reset(token)
+        if owner is not asyncio.current_task():
+            # An abandoned async generator finalized by the loop: roll back.
+            logger.warning(
+                "transaction.atomic() exited from a different task (an abandoned "
+                "async generator?); rolling it back. Close generators with "
+                "contextlib.aclosing()."
+            )
+            connection.needs_rollback = True
+        await run_in_caller_thread(atomic.__exit__, exc_type, exc_value, traceback)
+    finally:
+        _reset(_caller_thread_connections, token)
+
+
+def _reset(var: contextvars.ContextVar[Any], token: Any) -> None:
+    try:
+        var.reset(token)
     except ValueError:
-        # Exited in a different context; the closed scope is ignored there.
+        # Exited in a different context; the stale value is ignored there.
         pass
 
 
@@ -150,17 +209,25 @@ def on_commit(func: Callable[[], Any], using: str | None = None,
     called from native code, or scheduled as a background task from async
     code (exceptions are logged).
     """
-    connection = get_connection(using)
+    connection = None
+    if in_sync_caller_loop():
+        caller_connections = _caller_thread_connections.get() or {}
+        connection = caller_connections.get(DEFAULT_DB_ALIAS if using is None else using)
+    if connection is None:
+        connection = get_connection(using)
     if connection.in_atomic_block:
 
         def run() -> Any:
             result = func()
-            if inspect.isawaitable(result):
+            if not inspect.isawaitable(result):
+                return result
+            if in_native_context():
                 return await_(result)
-            return result
+            # On the synchronous caller's thread, during the atomic block's exit.
+            return async_to_sync(_await)(result)
 
         functools.update_wrapper(run, func)
-        django_transaction.on_commit(run, using=using, robust=robust)
+        connection.on_commit(run, robust=robust)
         return
     try:
         result = func()
@@ -183,3 +250,7 @@ def _finish_background_task(task: asyncio.Task[Any]) -> None:
     _background_tasks.discard(task)
     if not task.cancelled() and task.exception() is not None:
         logger.error("on_commit callback failed", exc_info=task.exception())
+
+
+async def _await(awaitable: Any) -> Any:
+    return await awaitable

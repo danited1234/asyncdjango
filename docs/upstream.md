@@ -14,6 +14,8 @@ the test suite has verified:
 | psycopg | 3.2+ | 3.3.2 (binary, bundled libpq 16.9) |
 | psycopg-pool | 3.2+ | 3.3.3 |
 | greenlet | 3.0+ | 3.5.6 |
+| asgiref | Django's requirement | 3.12.1 |
+| Django Channels (optional, tests only) | 4.2+ | 4.2.2 |
 | PostgreSQL | 14+ (Django 6.0's minimum) | 18.6 |
 
 Before widening a range, run the full suite against the new version.
@@ -35,8 +37,17 @@ Installed from `AsyncDjangoConfig.ready()`:
 | `django.utils.deprecation.MiddlewareMixin.__acall__` | Runs `process_request`/`process_response` natively | Only for classes on the native middleware list |
 
 `asyncdjango/_threads.py` contains the only deliberate thread offloads
-(error reporting for 5xx responses, and finishing requests that already used
-Django's per-request thread); the source guard test allows that file alone.
+(error reporting for 5xx responses, finishing requests that already used
+Django's per-request thread, and ORM calls on a loop that `async_to_sync()`
+made for a blocked synchronous caller); the source guard test allows that
+file alone.
+
+## Internals read
+
+| Internal | Used for |
+| --- | --- |
+| `asgiref.sync.AsyncToSync.loop_thread_executors` | Recognizing an event loop that `async_to_sync()` created for a synchronous caller (`scope.in_sync_caller_loop()`). asgiref registers each such loop there for the duration of the call. |
+| `psycopg_pool.AsyncConnectionPool` shutdown order | `close()` waits for the pool's worker tasks before closing idle connections; under `asyncio.run()` shutdown those workers are already cancelled, so `pool._close_at_shutdown()` closes every connection the pool opened itself (tracked from the `configure` callback). |
 
 `NativeASGIHandler.load_middleware()` also swaps
 `django.core.handlers.base.convert_exception_to_response` while it builds

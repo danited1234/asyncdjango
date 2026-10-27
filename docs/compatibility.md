@@ -24,7 +24,7 @@ With `"asyncdjango"` in `INSTALLED_APPS` (and `PATCH_ORM`, the default):
 | `sync_to_native(fn)` | Runs any ORM-only synchronous function natively; a replacement for `sync_to_async` around ORM code. |
 | `NativeASGIHandler` | Django's request cycle; see the README for what moves off threads. |
 | Async middleware | Function and class middleware with `async_capable = True`, and async `process_view`/`process_exception`/`process_template_response` hooks. |
-| Django's built-in middleware | `MiddlewareMixin`'s `process_request`/`process_response` run natively instead of in a thread for built-ins that do no blocking I/O (session-dependent ones only with the database or signed-cookie session engine). See [guide.md ง7](guide.md#7-middleware). |
+| Django's built-in middleware | `MiddlewareMixin`'s `process_request`/`process_response` run natively instead of in a thread for built-ins that do no blocking I/O (session-dependent ones only with the database or signed-cookie session engine). See [guide.md ยง7](guide.md#7-middleware). |
 | `asyncdjango.rest_framework` | ADRF's API (`APIView`, generics, mixins, viewsets, routers, serializers, `@api_view`). |
 
 ## Behavior that differs from sync Django or ADRF
@@ -84,9 +84,17 @@ With `"asyncdjango"` in `INSTALLED_APPS` (and `PATCH_ORM`, the default):
   only visible inside the same native call (for example, within a
   `sync_to_native` function). Tools that read the thread's connection, such
   as the debug toolbar, do not see native queries.
+- **`async_to_sync` from synchronous code** (Celery tasks, management
+  commands, scripts, async tests on Django's `TestCase`) runs the coroutine on
+  an event loop that lives for that one call. There, ORM calls run on the
+  calling thread with its Django connection, exactly as without asyncdjango:
+  no pool per call, and the caller's open transaction is visible. Concurrent
+  ORM calls in that loop take turns on the thread, as with `sync_to_async`.
+  `NATIVE_IN_ASYNC_TO_SYNC = True` uses the native path there instead.
 - **Tests.** Django's `TestCase` isolates tests with a transaction on its sync
-  connection, which native queries cannot see. Use
-  `asyncdjango.test.NativeTestCase` (rollback isolation) or
+  connection. Async tests on it run their ORM calls on that connection (see the
+  previous item), so they work but do not exercise the native path. To test
+  native code, use `asyncdjango.test.NativeTestCase` (rollback isolation) or
   `NativeTransactionTestCase` (commit and truncate).
 - **Generic relations.** Accessing a `GenericRelation` manager calls
   `ContentType.objects.get_for_model()`, which queries synchronously on a
@@ -123,7 +131,14 @@ Also not covered:
 - **Windows development:** psycopg async cannot use Windows' default
   `ProactorEventLoop`; the server must run a `SelectorEventLoop` (or develop
   under WSL/Docker). The test helpers select the right loop automatically.
-  Linux and macOS need nothing special.
+  `async_to_sync` from synchronous code does not need one (it uses the calling
+  thread's connection) unless `NATIVE_IN_ASYNC_TO_SYNC` is on. Linux and macOS
+  need nothing special.
+- **Django Channels:** route both the `"http"` and the `"lifespan"` scope of
+  `ProtocolTypeRouter` to `NativeASGIHandler`; the router rejects scope types
+  it has no entry for. Async consumers and websocket middleware can use the
+  native ORM; Channels' `database_sync_to_async` stays on a thread. Tested
+  with Channels 4.2.
 - **Host name resolution:** asyncio resolves host names in its default thread
   executor when psycopg opens a *new physical connection* (not per query). Use
   an IP address for `HOST` to avoid it entirely.
