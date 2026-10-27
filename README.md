@@ -10,7 +10,7 @@ async driver and a connection pool.
 Your models, managers, querysets, migrations, admin, and settings remain
 Django's own. Nothing about the model layer is reimplemented.
 
-> Status: 0.1.0.dev0, pre-release. Verified with Python 3.13, Django 6.0.3,
+> Status: 0.1.0a1, alpha. Verified with Python 3.13, Django 6.0.3,
 > DRF 3.16.1, psycopg 3.3, PostgreSQL 18. See [docs/upstream.md](docs/upstream.md).
 
 ## Why

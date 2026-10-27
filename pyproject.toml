@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asyncdjango"
-version = "0.1.0.dev0"
+version = "0.1.0a1"
 description = "A Django app that runs the async ORM and DRF-style views natively on the event loop"
 readme = "README.md"
 requires-python = ">=3.12"
