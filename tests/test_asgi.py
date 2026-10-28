@@ -71,7 +71,7 @@ class HandlerTests(OffloadGuardedTestCase):
         self.assertEqual([o.name async for o in Organization.objects.all()], ["kept"])
 
     async def test_client_disconnect_cancels_view_and_rolls_back(self):
-        self.offload.allow = self.offload.allow | {"cancel"}
+        self.allow_cancel_thread()
         views.events.clear()
         app = NativeASGIHandler()
         disconnect = asyncio.Event()

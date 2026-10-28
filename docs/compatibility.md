@@ -144,5 +144,6 @@ Also not covered:
   an IP address for `HOST` to avoid it entirely.
 - **Query cancellation:** when a request is cancelled mid-query (client
   disconnect), psycopg cancels the server-side query. With libpq 17+ that is
-  non-blocking; with older libpq (psycopg-binary 3.3.2 bundles 16.9) psycopg
-  sends the cancel request from a thread.
+  non-blocking (psycopg-binary 3.3.6 bundles libpq 18.4; the test suite checks
+  that no thread is used); with older libpq (psycopg-binary 3.3.2 bundles 16.9)
+  psycopg sends the cancel request from a thread.

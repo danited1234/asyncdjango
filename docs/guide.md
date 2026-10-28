@@ -51,7 +51,7 @@ served natively (see [§12](#12-troubleshooting)).
 
 ```console
 pip install "asyncdjango[drf] @ git+https://github.com/danited1234/asyncdjango.git@main"
-pip install "psycopg[binary]"      # or psycopg[c] built against libpq 17+
+pip install "psycopg[binary]"      # 3.3.6+ bundles libpq 18: thread-free query cancel
 ```
 
 Pin a commit instead of `main` in `requirements.txt`

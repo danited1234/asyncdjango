@@ -23,7 +23,7 @@ Django app on real Django models. See README.md for the architecture.
 - [x] Loop shutdown closes every connection a pool opened (psycopg_pool's `close()` aborts on its cancelled workers and left idle connections open: one leak per `asyncio.run()`).
 - [x] `async_to_sync()` from synchronous code (Celery tasks, scripts, Django's `TestCase`) runs ORM calls on the caller's thread and connection instead of a pool per call; `NATIVE_IN_ASYNC_TO_SYNC` opts back in.
 - [x] Cancellation (client disconnect, task cancel) rolls back and returns the connection.
-- [ ] Verify the thread-free query cancel path with libpq 17+ (psycopg-binary 3.3.2 bundles libpq 16.9, which cancels from a thread).
+- [x] Thread-free query cancel with libpq 17+: psycopg-binary 3.3.6 bundles libpq 18.4, and the cancellation tests forbid a thread whenever libpq >= 17.
 - [ ] Reuse `DatabaseWrapper` objects across scopes if profiling on Linux shows the per-call construction matters.
 
 ## 1. Django ORM API
@@ -56,7 +56,7 @@ Django app on real Django models. See README.md for the architecture.
 - [x] Document configuration, migrations, deployment, security, and supported versions (`docs/deployment.md`, `docs/compatibility.md`, `docs/porting.md`).
 - [ ] Port a slice of a production ADRF application (imports, `sync_to_async` → `ais_valid`/`adata`/`sync_to_native`, `async_capable` on its middleware) and run its test suite.
 - [x] GitHub Actions workflow: suite on Python 3.12-3.14 x PostgreSQL 14/18 service containers; optional benchmark job.
-- [ ] Confirm the first Linux CI run is green (verified locally on Windows with Python 3.12 and 3.13 only).
+- [x] Linux CI is green: Python 3.12/3.13/3.14 x PostgreSQL 14/18 on every push to `main` since 2026-10-28.
 - [ ] Benchmark with a real server (uvicorn + an HTTP load generator) on Linux.
 - [ ] Decide whether to support Django 5.2 LTS (untested; the patched internals are similar).
 - [ ] Define release criteria for 1.0 (a production application running on it in staging).

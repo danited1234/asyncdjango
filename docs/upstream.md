@@ -11,7 +11,7 @@ the test suite has verified:
 | Python | 3.12+ (Django 6.0's minimum) | 3.12, 3.13.12 |
 | Django | 6.0.x | 6.0.3 |
 | Django REST framework (optional) | 3.16.x | 3.16.1 |
-| psycopg | 3.2+ | 3.3.2 (binary, bundled libpq 16.9) |
+| psycopg | 3.2+ | 3.3.2 (binary, libpq 16.9), 3.3.6 (binary, libpq 18.4) |
 | psycopg-pool | 3.2+ | 3.3.3 |
 | greenlet | 3.0+ | 3.5.6 |
 | asgiref | Django's requirement | 3.12.1 |

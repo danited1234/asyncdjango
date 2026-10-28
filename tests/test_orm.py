@@ -5,6 +5,7 @@ import datetime
 import decimal
 import threading
 
+import psycopg
 from django.core.exceptions import SynchronousOnlyOperation
 from django.db import IntegrityError, connections, transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
@@ -15,6 +16,9 @@ from asyncdjango.diagnostics import ThreadOffloadDetector
 from asyncdjango.test import NativeTransactionTestCase
 
 from .testapp.models import AuditLog, Employee, Note, Organization, Profile, Tag
+
+# libpq 17 added a non-blocking cancel API; psycopg cancels from a thread before it.
+THREAD_FREE_CANCEL = psycopg.pq.version() >= 170000
 
 
 class OffloadGuardedTestCase(NativeTransactionTestCase):
@@ -27,6 +31,10 @@ class OffloadGuardedTestCase(NativeTransactionTestCase):
     async def asyncTearDown(self):
         await self.offload.__aexit__(None, None, None)
         await super().asyncTearDown()
+
+    def allow_cancel_thread(self):
+        if not THREAD_FREE_CANCEL:
+            self.offload.allow = self.offload.allow | {"cancel"}
 
     async def assert_pool_idle(self, alias="default"):
         """Every pooled connection is back (allowing for one still opening)."""
@@ -287,9 +295,7 @@ class ConcurrencyTests(OffloadGuardedTestCase):
         self.assertEqual(threads, {thread})
 
     async def test_cancelled_query_returns_connection(self):
-        # psycopg cancels the server-side query with a thread unless libpq >= 17
-        # provides the non-blocking cancel API; that is cancellation-only.
-        self.offload.allow = self.offload.allow | {"cancel"}
+        self.allow_cancel_thread()
         await Organization.objects.acreate(name="warm")
         task = asyncio.create_task(
             Organization.objects.extra(select={"slept": "pg_sleep(5)"}).afirst()
