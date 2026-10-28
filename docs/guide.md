@@ -344,9 +344,38 @@ authentication, permission and throttle classes, serializer fields,
 - Use blocking clients (`requests`, synchronous `redis.Redis`, `boto3`,
   `smtplib`) in async views or natively run hooks. They stall every request
   in the worker. Wrap them in `sync_to_async`, or use an async client.
-- Rely on Django's cache API for non-blocking access: `await cache.aget(...)`
-  with Django's Redis backend still uses a thread internally. Use
-  `redis.asyncio` directly when it matters.
+- Use Django's own cache backends from native code: `await cache.aget(...)`
+  runs in a thread, and a synchronous `cache.get()` blocks the loop. Use
+  `asyncdjango.cache.RedisCache` (see [Cache](#cache)) or `redis.asyncio`
+  directly.
+
+### Cache
+
+`asyncdjango.cache.RedisCache` is Django's Redis backend with its async
+methods (`aget`, `aset`, `aget_many`, `aincr`, ...) awaited on the event loop
+through `redis.asyncio`. Synchronous calls from native code are awaited too,
+so DRF throttles, the `cached_db` session backend, and `save()` overrides that
+use the cache stop blocking the loop. Sync views, management commands, and
+Celery tasks keep Django's synchronous client.
+
+```bash
+pip install "asyncdjango[redis]"
+```
+
+```python
+CACHES = {
+    "default": {
+        "BACKEND": "asyncdjango.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/0",
+        "OPTIONS": {"max_connections": 50},  # passed to both connection pools
+    },
+}
+```
+
+Each event loop gets its own `redis.asyncio` connection pool, disconnected
+when the loop shuts down (`await cache.aclose()` does it earlier). A custom
+`OPTIONS["pool_class"]` or `parser_class` applies to the synchronous client
+only.
 
 ## 6. Synchronous code
 
@@ -510,7 +539,8 @@ ASYNCDJANGO = {
 
 Matching is by exact class path. A subclass of a built-in middleware is not
 trusted automatically. Do not list middleware that reads files (WhiteNoise),
-calls HTTP services, or uses a synchronous cache.
+calls HTTP services, or uses a cache backend other than
+`asyncdjango.cache.RedisCache`.
 
 In async views and async middleware, read the user with
 `user = await request.auser()`: `request.user` is a lazy object whose first

@@ -38,6 +38,8 @@ dependencies = [
 
 [project.optional-dependencies]
 drf = ["djangorestframework>=3.16,<3.17"]
+# asyncdjango.cache.RedisCache.
+redis = ["redis>=5.0"]
 # Only for asyncdjango's own test suite (tests/test_channels.py).
 test = ["channels>=4.2"]
 # Only for benchmarks/ (the ADRF baseline and the charts).
