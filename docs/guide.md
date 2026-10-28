@@ -669,6 +669,7 @@ ASYNCDJANGO = {
     "POOLS": {},                       # per-alias overrides, e.g. {"replica": {"max_size": 4}}
     "NATIVE_SYNC_MIDDLEWARE": [],      # extra middleware classes to run natively
     "NATIVE_BUILTIN_MIDDLEWARE": True, # run Django's non-blocking built-in middleware natively
+    "STALL_THRESHOLD": None,           # seconds; log every event-loop stall at least this long
 }
 ```
 

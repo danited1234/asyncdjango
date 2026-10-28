@@ -15,6 +15,9 @@ tests/test_guards.py). These remain on threads on purpose:
   Django's ``TestCase``). asgiref runs it on that caller's own thread, which
   is blocked waiting for the loop anyway, so no thread is added; the work uses
   the caller's Django connection and sees its open transactions.
+
+``asyncdjango.monitoring`` also starts one watchdog thread per event loop when
+``STALL_THRESHOLD`` is set; it only reads the loop's heartbeat and stack.
 """
 
 from __future__ import annotations

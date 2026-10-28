@@ -123,6 +123,41 @@ and do not use the native path. Run them as before.
 
 ## Observability
 
+### Event-loop stalls
+
+Every request in a worker shares one event loop, so a blocking call (a
+synchronous HTTP client, password hashing, a large serializer, a slow import)
+delays every other request on that worker. Set a threshold to find them:
+
+```python
+ASYNCDJANGO = {"STALL_THRESHOLD": 0.1}  # seconds
+```
+
+`NativeASGIHandler` then starts a watchdog for its loop. Each stall of at
+least 0.1 s logs one warning on the `asyncdjango.stalls` logger, with its
+length, the request, and the stack of the code that was blocking:
+
+```
+Event loop blocked for 0.312s during GET /api/invoices/; stack while blocked:
+  ...
+  File "invoices/views.py", line 41, in get
+    pdf = render_pdf(invoice)
+  ...
+```
+
+The stack is taken once, when the stall crosses the threshold, so a stall
+made of several blocking calls shows the first. A stall shorter than about a
+quarter of the threshold past it may end before the stack is taken; the
+warning then says so. `asyncdjango.monitoring.stall_stats()` returns the
+running loop's counters (`stalls`, `longest`, `total` seconds) for metrics.
+
+The watchdog is one daemon thread per worker that only reads the heartbeat
+and the loop thread's stack; the loop itself runs a timer every quarter of the
+threshold. Both cost microseconds, so leaving it on in production is fine.
+Route `asyncdjango.stalls` to your error tracker to see stalls in staging.
+
+### Metrics and tracing
+
 - `asyncdjango.db.pool_stats()` returns psycopg pool counters per alias.
 - `connection.execute_wrapper()` installed from a `connection_created`
   receiver sees every native query (for metrics or tracing).

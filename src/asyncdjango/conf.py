@@ -29,6 +29,9 @@ DEFAULTS: dict[str, Any] = {
     # Also treat Django's built-in middleware that does no blocking I/O as
     # native (see asyncdjango.middleware).
     "NATIVE_BUILTIN_MIDDLEWARE": True,
+    # Log a warning with a stack trace whenever the event loop is blocked for
+    # this many seconds (asyncdjango.monitoring). None: off.
+    "STALL_THRESHOLD": None,
 }
 
 

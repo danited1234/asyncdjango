@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 
 from django.db import transaction
 from django.http import Http404, JsonResponse
@@ -40,6 +41,11 @@ async def slow_write(request):
     except asyncio.CancelledError:
         events.append("cancelled")
         raise
+    return JsonResponse({"ok": True})
+
+
+async def blocking(request):
+    time.sleep(float(request.GET.get("seconds", "0.3")))  # deliberately blocks the loop
     return JsonResponse({"ok": True})
 
 

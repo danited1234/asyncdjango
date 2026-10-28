@@ -8,5 +8,6 @@ urlpatterns = [
     path("missing/", views.missing),
     path("slow/", views.slow_write),
     path("deferred/", views.deferred),
+    path("blocking/", views.blocking),
     path("api/", include("tests.testapp.api_urls")),
 ]

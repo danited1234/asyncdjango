@@ -17,7 +17,8 @@ request that already ran code in Django's per-request thread. It also:
   and closing them at shutdown;
 * supports ``ATOMIC_REQUESTS`` for async views with a native transaction;
 * can run selected synchronous middleware natively
-  (``ASYNCDJANGO["NATIVE_SYNC_MIDDLEWARE"]``).
+  (``ASYNCDJANGO["NATIVE_SYNC_MIDDLEWARE"]``);
+* starts the event-loop stall watchdog (``ASYNCDJANGO["STALL_THRESHOLD"]``).
 
 Synchronous *views* still run in a worker thread, as in Django: they may call
 blocking libraries. Write views as ``async def`` to stay on the event loop.
@@ -32,6 +33,7 @@ import asyncio
 import logging
 import threading
 from functools import wraps
+from importlib import import_module
 from typing import Any
 
 import django
@@ -48,12 +50,14 @@ from django.http.multipartparser import MultiPartParserError
 from django.urls import set_script_prefix, set_urlconf
 from django.utils.log import log_response
 
+from . import conf
 from ._threads import run_error_reporting, run_in_request_thread
 from .db.bridge import await_
 from .db.pool import close_pools, open_pools
 from .db.scope import run_native, sync_to_native
 from .db.transaction import Atomic
 from .middleware import native_middleware_paths
+from .monitoring import watch_event_loop
 from .signals import asend as native_asend
 
 logger = logging.getLogger("asyncdjango.asgi")
@@ -102,6 +106,7 @@ def _request_thread_used() -> bool:
 class NativeASGIHandler(ASGIHandler):
     def __init__(self) -> None:
         self._native_middleware = native_middleware_paths()
+        self._stall_threshold = conf.get("STALL_THRESHOLD")
         super().__init__()
 
     # Startup ---------------------------------------------------------------
@@ -145,6 +150,8 @@ class NativeASGIHandler(ASGIHandler):
     # ASGI entry point --------------------------------------------------------
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if self._stall_threshold:
+            watch_event_loop(self._stall_threshold)
         if scope["type"] == "lifespan":
             await self.lifespan(scope, receive, send)
             return
@@ -344,4 +351,8 @@ async def warm_content_types() -> None:
 def get_asgi_application() -> NativeASGIHandler:
     """Drop-in replacement for ``django.core.asgi.get_asgi_application()``."""
     django.setup(set_prefix=False)
+    # Django imports the URLconf, and every view module with it, on the first
+    # request; here that would block the event loop for that request.
+    if urlconf := getattr(settings, "ROOT_URLCONF", None):
+        import_module(urlconf)
     return NativeASGIHandler()
