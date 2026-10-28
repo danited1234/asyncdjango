@@ -6,7 +6,7 @@ import decimal
 import threading
 
 from django.core.exceptions import SynchronousOnlyOperation
-from django.db import IntegrityError, connections
+from django.db import IntegrityError, connections, transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
 
 from asyncdjango import sync_to_native
@@ -348,3 +348,20 @@ class ConcurrencyTests(OffloadGuardedTestCase):
         self.assertEqual(seen, ["SELECT"])
         # Outside any scope, connections[...] is still Django's own wrapper.
         self.assertIsNone(connections["default"].connection)
+
+    async def test_async_connection_is_the_pooled_connection(self):
+        import psycopg
+
+        def pooled():
+            from django.db import connection
+
+            connection.ensure_connection()
+            return connection.connection.async_connection
+
+        first = await sync_to_native(pooled)()
+        second = await sync_to_native(pooled)()
+        self.assertIsInstance(first, psycopg.AsyncConnection)
+        self.assertIsInstance(second, psycopg.AsyncConnection)
+        async with transaction.atomic():
+            inside = await sync_to_native(pooled)()
+            self.assertIs(await sync_to_native(pooled)(), inside)

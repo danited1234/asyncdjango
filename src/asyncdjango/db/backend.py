@@ -126,6 +126,16 @@ class GreenletConnection:
         self._aconn = connection
         self.alias = alias
 
+    @property
+    def async_connection(self) -> psycopg.AsyncConnection:
+        """The pooled connection behind this facade.
+
+        Each ORM call gets a new facade, but the pooled connection is the same
+        object on every checkout, so per-session state (``SET search_path``,
+        for example) can be keyed by it.
+        """
+        return self._aconn
+
     def detach(self) -> psycopg.AsyncConnection | None:
         """Forget the pooled connection so stale wrappers cannot reuse it."""
         connection = self._aconn

@@ -162,7 +162,10 @@ middleware still run in Django's per-request thread. Options:
 - Tenancy via `search_path`: an execute wrapper installed from
   `connection_created` keeps working. It runs on every pool checkout, so
   outside a transaction each awaited ORM call may re-issue `SET search_path`.
-  Inside `async with transaction.atomic()` it is set once.
+  Inside `async with transaction.atomic()` it is set once. To skip the
+  repeated `SET`, remember the applied schema per pooled connection, keyed by
+  `connection.connection.async_connection` (the same psycopg connection on
+  every checkout; a fresh wrapper and facade are created per call).
 
 ## 7. Tests
 
