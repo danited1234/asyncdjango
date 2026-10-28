@@ -63,6 +63,27 @@ from `concurrency` asyncio tasks, the WSGI stack from `concurrency` threads
 calling `WSGIHandler` (the way gunicorn's `gthread` worker runs it). No HTTP
 server or network stack is measured, and each stack runs in one process.
 
+### Behind a real server (Linux)
+
+`benchmarks/server.py` runs the same scenarios against each stack in its
+production shape: one uvicorn worker (uvloop, httptools) for the ASGI stacks
+and one gunicorn `gthread` worker with `concurrency` threads for the WSGI
+stack, driven over loopback HTTP by [wrk](https://github.com/wg/wrk)
+(`benchmarks/wrk.lua` sends each scenario's requests). The server and wrk are
+pinned to separate CPUs with `taskset`; keep PostgreSQL on others. It needs
+Linux with `wrk` installed:
+
+```console
+pip install -e ".[drf,bench-server]" "psycopg[binary]"
+python -m benchmarks.server --repeat 3 --server-cpus 0,1 --client-cpus 2,3
+docker compose -f benchmarks/docker/compose.yaml run --rm bench   # or in Docker
+```
+
+The `server benchmark` workflow runs it on GitHub's 4-vCPU Linux runners (one
+job per scenario; PostgreSQL on vCPU 3, the server on 0-1, wrk on 2) and
+publishes every round as an annotation on the job. Results use the same file
+format as `run.py`, so `benchmarks/plot.py` charts them.
+
 ## Results
 
 Measured on 2026-10-27: Windows 10, Intel Core i5-8350U (4 cores, 8 threads,
@@ -122,8 +143,10 @@ psycopg 3.3.2, psycopg-pool 3.3.3, PostgreSQL 18.6 on the same machine.
   (see the ranges below and the bands in the scaling chart). asyncdjango.rest_framework
   at 100 clients was the least stable case, with rounds between 106 and 212
   req/s for read and between 67 and 263 for write. Plain asyncdjango at 100
-  clients stayed between 270 and 390. The cause is not known yet and is
-  tracked in `todo.md`.
+  clients stayed between 270 and 390. Behind a real server on Linux (below)
+  the same case stays within 9% across rounds (202–220 req/s for read,
+  245–250 for write), so the spread comes from this in-process Windows setup,
+  where the load generator shares the event loop with the stack.
 
 These figures come from one laptop, with the client and the database on the
 same machine. Run the benchmark on your own hardware before relying on
@@ -193,3 +216,86 @@ them, and compare stacks only within one run.
 | slow | 100 | drf | 283 | 268–287 | 351 | 411 | 1.5 | 105 | 20 |
 | slow | 100 | asyncdjango | 306 | 306–314 | 325 | 404 | 1.0 | 1 | 20 |
 | slow | 100 | django | 278 | 277–283 | 352 | 431 | 2.2 | 106 | 20 |
+
+## Results behind a real server (Linux)
+
+Measured on 2026-10-28 by the `server benchmark` workflow on a GitHub-hosted
+`ubuntu-latest` runner (x86_64, 4 vCPUs): Python 3.13, Django 6.0.3, DRF
+3.16.1, adrf 0.1.12, psycopg 3.3.6, PostgreSQL 18 in a container on vCPU 3,
+the server on vCPUs 0–1, wrk on vCPU 2. `python -m benchmarks.server
+--repeat 3 --duration 8 --warmup 2`, a 20-connection pool, one job per
+scenario. Every round is in
+[`benchmarks/results/server-github-2026-10-28.csv`](../benchmarks/results/server-github-2026-10-28.csv).
+No request failed in any round.
+
+- **asyncdjango.rest_framework versus ADRF.** 8.6 times the read throughput
+  (214 against 25 req/s at 50 clients, at a ninth of the CPU per request) and
+  1.8 times the write throughput, as in-process.
+- **asyncdjango versus Django's async views.** 28% more reads and 35% more
+  writes at 50 clients (313 against 245, 389 against 289 req/s), with 31–36%
+  less CPU per request.
+- **asyncdjango.rest_framework versus synchronous DRF under gunicorn.** DRF
+  serves 10–22% more reads and writes when the server is CPU-bound, although
+  their CPU per request is about the same (3.5–4.9 ms). The event loop is one
+  thread and so is capped at one core (214 req/s × 4.7 ms ≈ 1.0), while DRF's
+  worker threads overlap a little inside psycopg and the socket layer (about
+  1.15 cores). In exchange asyncdjango runs on 5 threads instead of 107 at 100
+  clients, and its 99th-percentile latency stays lower: 979 against 5,196 ms
+  for read and 878 against 3,715 ms for write at 100 clients. Run one worker
+  per core, as in production, to use the other cores.
+- **Database-bound requests.** The `slow` scenario is capped by the pool (20
+  connections × 50 ms = 400 req/s). The asyncdjango stacks reach 380–389
+  req/s, the others 350–388. Plain asyncdjango uses the least CPU per request
+  (1.3–1.4 ms), asyncdjango.rest_framework and synchronous DRF 1.4–1.7, ADRF
+  and Django's async views 2.4–3.1.
+- **Stability.** Every case's rounds stay within 10% of each other, including
+  asyncdjango.rest_framework at 100 clients, which varied by a factor of up to
+  four in the in-process Windows runs.
+
+| scenario | clients | stack | req/s (median) | req/s range | p50 ms | p99 ms | CPU ms/request | threads | DB connections |
+|---|---|---|---|---|---|---|---|---|---|
+| read | 25 | asyncdjango-drf | 228 | 219–234 | 105 | 197 | 4.4 | 5 | 20 |
+| read | 25 | adrf | 25 | 25–25 | 800 | 1451 | 43.9 | 38 | 20 |
+| read | 25 | drf | 251 | 246–256 | 96 | 171 | 4.6 | 32 | 20 |
+| read | 25 | asyncdjango | 328 | 325–331 | 75 | 98 | 3.1 | 5 | 20 |
+| read | 25 | django | 255 | 253–262 | 96 | 120 | 4.5 | 45 | 20 |
+| read | 50 | asyncdjango-drf | 214 | 210–228 | 215 | 401 | 4.7 | 5 | 20 |
+| read | 50 | adrf | 25 | 25–25 | 1618 | 2316 | 43.7 | 63 | 20 |
+| read | 50 | drf | 246 | 246–251 | 194 | 873 | 4.7 | 57 | 20 |
+| read | 50 | asyncdjango | 313 | 310–326 | 158 | 198 | 3.2 | 5 | 20 |
+| read | 50 | django | 245 | 244–255 | 201 | 283 | 4.6 | 70 | 20 |
+| read | 100 | asyncdjango-drf | 205 | 202–220 | 441 | 979 | 4.9 | 5 | 20 |
+| read | 100 | adrf | 25 | 25–25 | 3751 | 4021 | 44.0 | 116 | 20 |
+| read | 100 | drf | 240 | 238–246 | 352 | 5196 | 4.8 | 107 | 20 |
+| read | 100 | asyncdjango | 298 | 298–319 | 324 | 743 | 3.4 | 5 | 20 |
+| read | 100 | django | 241 | 234–250 | 400 | 944 | 4.7 | 120 | 20 |
+| write | 25 | asyncdjango-drf | 286 | 282–290 | 85 | 163 | 3.5 | 5 | 20 |
+| write | 25 | adrf | 150 | 149–153 | 163 | 219 | 7.4 | 39 | 21 |
+| write | 25 | drf | 318 | 313–327 | 76 | 134 | 3.7 | 32 | 20 |
+| write | 25 | asyncdjango | 424 | 424–427 | 58 | 85 | 2.4 | 5 | 20 |
+| write | 25 | django | 309 | 299–310 | 79 | 103 | 3.8 | 45 | 20 |
+| write | 50 | asyncdjango-drf | 265 | 265–271 | 182 | 282 | 3.8 | 5 | 21 |
+| write | 50 | adrf | 147 | 147–150 | 331 | 413 | 7.6 | 64 | 21 |
+| write | 50 | drf | 310 | 300–315 | 155 | 537 | 3.8 | 57 | 20 |
+| write | 50 | asyncdjango | 389 | 385–400 | 126 | 191 | 2.6 | 5 | 21 |
+| write | 50 | django | 289 | 286–296 | 170 | 233 | 4.0 | 72 | 20 |
+| write | 100 | asyncdjango-drf | 246 | 245–250 | 375 | 878 | 4.1 | 5 | 21 |
+| write | 100 | adrf | 142 | 139–146 | 672 | 980 | 7.8 | 115 | 20 |
+| write | 100 | drf | 299 | 297–303 | 304 | 3715 | 4.0 | 107 | 21 |
+| write | 100 | asyncdjango | 371 | 369–374 | 260 | 529 | 2.7 | 5 | 20 |
+| write | 100 | django | 286 | 285–287 | 340 | 735 | 4.1 | 120 | 20 |
+| slow | 25 | asyncdjango-drf | 388 | 387–388 | 63 | 80 | 1.6 | 5 | 20 |
+| slow | 25 | adrf | 369 | 366–369 | 66 | 86 | 2.9 | 37 | 20 |
+| slow | 25 | drf | 388 | 388–388 | 62 | 83 | 1.4 | 32 | 20 |
+| slow | 25 | asyncdjango | 389 | 389–390 | 61 | 83 | 1.3 | 5 | 20 |
+| slow | 25 | django | 377 | 377–378 | 65 | 82 | 2.4 | 40 | 20 |
+| slow | 50 | asyncdjango-drf | 385 | 383–386 | 128 | 167 | 1.6 | 5 | 20 |
+| slow | 50 | adrf | 365 | 362–367 | 134 | 182 | 3.0 | 93 | 20 |
+| slow | 50 | drf | 384 | 383–385 | 128 | 161 | 1.4 | 57 | 20 |
+| slow | 50 | asyncdjango | 388 | 387–390 | 127 | 149 | 1.4 | 5 | 20 |
+| slow | 50 | django | 373 | 373–374 | 131 | 172 | 2.4 | 93 | 20 |
+| slow | 100 | asyncdjango-drf | 380 | 380–381 | 256 | 337 | 1.6 | 5 | 20 |
+| slow | 100 | adrf | 350 | 348–351 | 270 | 432 | 3.1 | 173 | 20 |
+| slow | 100 | drf | 376 | 376–377 | 256 | 399 | 1.5 | 107 | 20 |
+| slow | 100 | asyncdjango | 386 | 385–386 | 255 | 282 | 1.4 | 5 | 20 |
+| slow | 100 | django | 364 | 363–364 | 265 | 438 | 2.5 | 175 | 20 |

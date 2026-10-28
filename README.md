@@ -51,6 +51,14 @@ At 50 concurrent clients on a 4-core laptop:
 - **For a request that waits 50 ms on the database**, every stack is limited
   by the 20-connection pool (270–306 req/s).
 
+Behind a real server on Linux (uvicorn or gunicorn, driven by wrk on a
+4-vCPU GitHub runner), the ADRF and Django comparisons hold (8.6 times ADRF's
+reads, 28-35% more than Django's async views). Synchronous DRF under gunicorn
+serves 10-22% more requests on these CPU-bound endpoints, since its threads
+use slightly more than the one core an event loop gets, but needs 107 threads
+at 100 clients against 5, and its 99th-percentile latency was 4 to 5 times
+higher.
+
 Results vary between runs and machines. See
 [docs/benchmarks.md](docs/benchmarks.md) for the method, all results with
 their spread, and how to run the benchmark on your own hardware.

@@ -78,7 +78,7 @@ jobs:
                       "stack", "concurrency", "round", "rps", "p50_ms", "p99_ms",
                       "cpu_ms_per_request", "peak_threads", "peak_db_connections", "errors")))
               env = data["environment"]
-              title = f"server-bench ${{ matrix.scenario }} ({env['processor'] or env['machine']}, {env['cpu_count']} CPUs)"
+              title = f"server-bench ${{ matrix.scenario }} ({env['machine']} with {env['cpu_count']} CPUs)"
               print(f"::notice title={title}::" + "%0A".join(lines))
           EOF
 
