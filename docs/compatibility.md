@@ -22,6 +22,8 @@ With `"asyncdjango"` in `INSTALLED_APPS` (and `PATCH_ORM`, the default):
 | Signal receivers | Synchronous receivers that query run natively; async receivers connected to `post_save` etc. are awaited. |
 | `connection_created`, `connection.execute_wrapper()` | Work per pooled connection checkout (for example, `search_path` multi-tenancy). |
 | `sync_to_native(fn)` | Runs any ORM-only synchronous function natively; a replacement for `sync_to_async` around ORM code. |
+| `cursor.copy()` (COPY) | Inside native code, Django's cursor gives psycopg's COPY API (`write`, `write_row`, `read`, `read_row`, `rows`, iteration) with I/O awaited; it joins an open `atomic()` block. Errors are psycopg's, as with Django's own cursor. |
+| Database session backends | `SessionStore.asave()` (db and cached_db), and so `alogin()`, `acycle_key()`, `aflush()`. |
 | `NativeASGIHandler` | Django's request cycle; see the README for what moves off threads. |
 | Async middleware | Function and class middleware with `async_capable = True`, and async `process_view`/`process_exception`/`process_template_response` hooks. |
 | Django's built-in middleware | `MiddlewareMixin`'s `process_request`/`process_response` run natively instead of in a thread for built-ins that do no blocking I/O (session-dependent ones only with the database or signed-cookie session engine). See [guide.md §7](guide.md#7-middleware). |
@@ -117,8 +119,6 @@ implementation with `SyncFallbackWarning` when
 
 Also not covered:
 
-- `cursor.copy()` (COPY) through Django's cursor; use psycopg's async API on a
-  raw connection.
 - `contrib.auth` backends' `aauthenticate()`/`aget_user()` default
   implementations (`BaseBackend`, for custom backends without async methods),
   `acheck_password()` (password hashing is deliberately slow CPU work), and

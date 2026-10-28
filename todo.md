@@ -37,7 +37,7 @@ Django app on real Django models. See README.md for the architecture.
 - [x] Non-PostgreSQL aliases raise `NativeAsyncUnsupported`, or fall back with `SyncFallbackWarning`.
 - [x] ContentType cache warmed at startup for generic relations.
 - [x] Native `SessionStore.asave()` for the db and cached_db session backends (the only DB-bound contrib async method left on a thread; `BaseBackend` auth defaults and `acheck_password` stay threaded on purpose).
-- [ ] `COPY` through the facade (currently raises; use psycopg directly).
+- [x] `COPY` through Django's cursor: `cursor.copy()` returns a synchronous facade over psycopg's `AsyncCopy` (`write`, `write_row`, `read`, `read_row`, `rows`, iteration); it joins an open native transaction.
 
 ## 2. ASGI and REST
 

@@ -87,11 +87,8 @@ class GreenletCursor:
         self.execute(psycopg_sql.Composed(parts))
         return args
 
-    def copy(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError(
-            "COPY is not available through the synchronous facade; use "
-            "psycopg's async cursor.copy() on a raw connection."
-        )
+    def copy(self, statement: Any, params: Any = None, **kwargs: Any) -> GreenletCopy:
+        return GreenletCopy(self._cursor.copy(statement, params, **kwargs))
 
     def __iter__(self):
         while (row := self.fetchone()) is not None:
@@ -106,6 +103,44 @@ class GreenletCursor:
     def __getattr__(self, name: str) -> Any:
         # Non-I/O attributes: description, rowcount, statusmessage, _query, ...
         return getattr(self._cursor, name)
+
+
+class GreenletCopy:
+    """Synchronous facade over psycopg's ``AsyncCopy`` (``with cursor.copy(...)``)."""
+
+    def __init__(self, context: Any) -> None:
+        self._context = context
+        self._copy: Any = None
+
+    def __enter__(self) -> GreenletCopy:
+        self._copy = await_(self._context.__aenter__())
+        return self
+
+    def __exit__(self, *exc_info: Any) -> Any:
+        return await_(self._context.__aexit__(*exc_info))
+
+    def write(self, buffer: Any) -> None:
+        await_(self._copy.write(buffer))
+
+    def write_row(self, row: Any) -> None:
+        await_(self._copy.write_row(row))
+
+    def read(self) -> Any:
+        return await_(self._copy.read())
+
+    def read_row(self) -> Any:
+        return await_(self._copy.read_row())
+
+    def rows(self) -> Any:
+        while (row := self.read_row()) is not None:
+            yield row
+
+    def set_types(self, types: Any) -> None:
+        self._copy.set_types(types)
+
+    def __iter__(self) -> Any:
+        while data := self.read():
+            yield data
 
 
 class _ReleasedConnection:
