@@ -58,5 +58,5 @@ Django app on real Django models. See README.md for the architecture.
 - [x] GitHub Actions workflow: suite on Python 3.12-3.14 x PostgreSQL 14/18 service containers; optional benchmark job.
 - [x] Linux CI is green: Python 3.12/3.13/3.14 x PostgreSQL 14/18 on every push to `main` since 2026-10-28.
 - [ ] Benchmark with a real server (uvicorn + an HTTP load generator) on Linux.
-- [ ] Decide whether to support Django 5.2 LTS (untested; the patched internals are similar).
+- [x] Support Django 5.2 LTS: the full suite passes on 5.2.18, every adapted function is identical to 6.0.3 apart from comments, and CI runs 5.2 on Python 3.12/PostgreSQL 14 and Python 3.14/PostgreSQL 18.
 - [ ] Define release criteria for 1.0 (a production application running on it in staging).

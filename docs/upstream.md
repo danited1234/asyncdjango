@@ -9,7 +9,7 @@ the test suite has verified:
 | Dependency | Supported range | Verified with |
 | --- | --- | --- |
 | Python | 3.12+ (Django 6.0's minimum) | 3.12, 3.13.12 |
-| Django | 6.0.x | 6.0.3 |
+| Django | 6.0.x, 5.2.x LTS | 6.0.3, 5.2.18 |
 | Django REST framework (optional) | 3.16.x | 3.16.1 |
 | psycopg | 3.2+ | 3.3.2 (binary, libpq 16.9), 3.3.6 (binary, libpq 18.4) |
 | psycopg-pool | 3.2+ | 3.3.3 |
@@ -18,7 +18,10 @@ the test suite has verified:
 | Django Channels (optional, tests only) | 4.2+ | 4.2.2 |
 | PostgreSQL | 14+ (Django 6.0's minimum) | 18.6 |
 
-Before widening a range, run the full suite against the new version.
+Before widening a range, run the full suite against the new version. Django
+5.2 was added after comparing every adapted function below (and the patched
+methods' originals) between 5.2.18 and 6.0.3: they are identical apart from
+comment wrapping. The adapted code keeps its 6.0.3 provenance.
 `tests/test_guards.py` fails if Django adds an async method that still offloads
 to a thread, and the other tests exercise every patched code path.
 

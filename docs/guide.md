@@ -43,7 +43,7 @@ FastAPI or any other asyncio application.
 
 ### Requirements
 
-Python 3.12+, Django 6.0.x, PostgreSQL 14+ with psycopg 3, and optionally
+Python 3.12+, Django 6.0.x or 5.2.x LTS, PostgreSQL 14+ with psycopg 3, and optionally
 Django REST framework 3.16.x. Other databases can stay configured but are not
 served natively (see [§12](#12-troubleshooting)).
 

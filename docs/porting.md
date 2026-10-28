@@ -1,6 +1,6 @@
 # Porting an ADRF code base
 
-This guide assumes a Django 6.0 project on PostgreSQL with psycopg 3, using
+This guide assumes a Django 6.0 (or 5.2 LTS) project on PostgreSQL with psycopg 3, using
 adrf views and serializers and `sync_to_async` around ORM code, which is the
 usual shape of an async DRF back end. Work on a branch and run your test
 suite after each step.
