@@ -77,6 +77,30 @@ outermost block exits.
 
 ## Install
 
+From GitHub (asyncdjango is not on PyPI yet):
+
+```console
+pip install "asyncdjango[drf] @ git+https://github.com/danited1234/asyncdjango.git@main"
+pip install "psycopg[binary]"   # psycopg 3 with its own libpq
+```
+
+In `requirements.txt`, pin a commit so builds are reproducible:
+
+```text
+asyncdjango[drf] @ git+https://github.com/danited1234/asyncdjango.git@<commit-sha>
+```
+
+Drop `[drf]` if you don't use Django REST framework. The machine (or Docker
+image) running pip needs `git`. While the repository is private, pip also
+needs credentials, for example
+`git+https://<token>@github.com/danited1234/asyncdjango.git@<commit-sha>` with a
+fine-grained token that can read this repository (keep the token out of the
+committed file; pass it as a build secret), or
+`git+ssh://git@github.com/danited1234/asyncdjango.git@<commit-sha>` with a
+deploy key.
+
+From a local checkout, for development:
+
 ```console
 pip install -e ".[drf]"
 ```

@@ -50,9 +50,14 @@ served natively (see [§12](#12-troubleshooting)).
 ### Install
 
 ```console
-pip install -e "path/to/asyncdjango[drf]"
+pip install "asyncdjango[drf] @ git+https://github.com/danited1234/asyncdjango.git@main"
 pip install "psycopg[binary]"      # or psycopg[c] built against libpq 17+
 ```
+
+Pin a commit instead of `main` in `requirements.txt`
+(`asyncdjango[drf] @ git+https://github.com/danited1234/asyncdjango.git@<commit-sha>`);
+see the README for private-repository credentials. From a local checkout, use
+`pip install -e "path/to/asyncdjango[drf]"`.
 
 ### Settings
 
