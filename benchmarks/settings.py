@@ -17,7 +17,7 @@ DEBUG = False
 USE_TZ = True
 ROOT_URLCONF = STACK.urlconf
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-ALLOWED_HOSTS = ["testserver"]
+ALLOWED_HOSTS = ["testserver", "127.0.0.1", "localhost"]
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",

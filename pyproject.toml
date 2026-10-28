@@ -42,6 +42,8 @@ drf = ["djangorestframework>=3.16,<3.17"]
 test = ["channels>=4.2"]
 # Only for benchmarks/ (the ADRF baseline and the charts).
 bench = ["adrf==0.1.12", "matplotlib>=3.8"]
+# benchmarks/server.py (Linux, with wrk installed).
+bench-server = ["adrf==0.1.12", "uvicorn[standard]>=0.38", "gunicorn>=23", "psutil>=6"]
 # Linting and the git hooks (see README, "Development").
 dev = ["pre-commit>=4", "ruff==0.14.2"]
 
