@@ -1,0 +1,30 @@
+# Real-server benchmark on Linux (see docs/benchmarks.md):
+#   docker compose -f benchmarks/docker/compose.yaml run --rm bench
+# PostgreSQL gets CPUs 4-7; the server (0-1) and wrk (2-3) share the rest.
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_PASSWORD: postgres
+    command: ["postgres", "-c", "max_connections=300"]
+    cpuset: "4-7"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 30
+
+  bench:
+    build:
+      context: ../..
+      dockerfile: benchmarks/docker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASYNCDJANGO_BENCH_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/asyncdjango_bench
+      PYTHONUNBUFFERED: "1"
+    cpuset: "0-3"
+    cap_add: [SYS_PTRACE]  # py-spy
+    volumes:
+      - ../results:/src/benchmarks/results
+    command: ["python", "-m", "benchmarks.server", "--repeat", "3"]

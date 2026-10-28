@@ -16,10 +16,10 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.lines import Line2D  # noqa: E402
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
-from benchmarks.stacks import STACKS  # noqa: E402
+from benchmarks.stacks import STACKS
 
 SCENARIO_TITLES = {
     "read": "Read: fetch, count, serialize 20 rows",
@@ -95,7 +95,7 @@ def bars(data: dict, metric: str, concurrency: int, theme: dict, meta: dict) -> 
     scenarios = [s for s in SCENARIO_TITLES if any(r["scenario"] == s for r in data["results"])]
     fig, axes = plt.subplots(1, len(scenarios), figsize=(4.1 * len(scenarios), 3.5),
                              sharey=True, squeeze=False)
-    for ax, scenario in zip(axes[0], scenarios):
+    for ax, scenario in zip(axes[0], scenarios, strict=True):
         rows = {r["stack"]: r for r in data["results"]
                 if r["scenario"] == scenario and r["concurrency"] == concurrency}
         stacks = [s for s in ORDER if s in rows]
@@ -103,7 +103,7 @@ def bars(data: dict, metric: str, concurrency: int, theme: dict, meta: dict) -> 
         ax.barh([POSITIONS[s] for s in stacks], values, height=0.72,
                 color=[theme["series"][s] for s in stacks])
         top = max(values)
-        for stack, value in zip(stacks, values):
+        for stack, value in zip(stacks, values, strict=True):
             ax.text(value + top * 0.02, POSITIONS[stack], fmt.format(value),
                     va="center", fontsize=9, color=theme["text"])
         ax.set_xlim(0, top * 1.22)
@@ -126,7 +126,7 @@ def scaling(data: dict, theme: dict, meta: dict) -> plt.Figure:
     scenarios = [s for s in SCENARIO_TITLES if any(r["scenario"] == s for r in data["results"])]
     fig, axes = plt.subplots(1, len(scenarios), figsize=(4.1 * len(scenarios), 3.6),
                              squeeze=False)
-    for ax, scenario in zip(axes[0], scenarios):
+    for ax, scenario in zip(axes[0], scenarios, strict=True):
         for stack in ORDER:
             rows = sorted((r for r in data["results"]
                            if r["scenario"] == scenario and r["stack"] == stack),

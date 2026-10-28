@@ -23,8 +23,8 @@ Django app on real Django models. See README.md for the architecture.
 - [x] Loop shutdown closes every connection a pool opened (psycopg_pool's `close()` aborts on its cancelled workers and left idle connections open: one leak per `asyncio.run()`).
 - [x] `async_to_sync()` from synchronous code (Celery tasks, scripts, Django's `TestCase`) runs ORM calls on the caller's thread and connection instead of a pool per call; `NATIVE_IN_ASYNC_TO_SYNC` opts back in.
 - [x] Cancellation (client disconnect, task cancel) rolls back and returns the connection.
-- [ ] Verify the thread-free query cancel path with libpq 17+ (psycopg-binary 3.3.2 bundles libpq 16.9, which cancels from a thread).
-- [ ] Reuse `DatabaseWrapper` objects across scopes if profiling on Linux shows the per-call construction matters.
+- [x] Thread-free query cancel with libpq 17+: psycopg-binary 3.3.6 bundles libpq 18.4, and the cancellation tests forbid a thread whenever libpq >= 17.
+- [x] Measured `DatabaseWrapper` construction per scope: 5 µs (scope, wrapper, and release together 18 µs) against 745 µs for a native `SELECT 1` round trip; a request makes 2-3 ORM calls on a few ms of CPU, so reuse would save under 1%. Not worth the shared state.
 
 ## 1. Django ORM API
 
@@ -36,8 +36,8 @@ Django app on real Django models. See README.md for the architecture.
 - [x] Opt-in `NativeManager`/`NativeModelMixin` for `PATCH_ORM = False`.
 - [x] Non-PostgreSQL aliases raise `NativeAsyncUnsupported`, or fall back with `SyncFallbackWarning`.
 - [x] ContentType cache warmed at startup for generic relations.
-- [ ] Native `SessionStore` async methods (db backend `asave` uses a thread) and remaining contrib async helpers.
-- [ ] `COPY` through the facade (currently raises; use psycopg directly).
+- [x] Native `SessionStore.asave()` for the db and cached_db session backends (the only DB-bound contrib async method left on a thread; `BaseBackend` auth defaults and `acheck_password` stay threaded on purpose).
+- [x] `COPY` through Django's cursor: `cursor.copy()` returns a synchronous facade over psycopg's `AsyncCopy` (`write`, `write_row`, `read`, `read_row`, `rows`, iteration); it joins an open native transaction.
 
 ## 2. ASGI and REST
 
@@ -52,11 +52,11 @@ Django app on real Django models. See README.md for the architecture.
 ## 3. Compatibility and release
 
 - [x] Compare correctness and concurrency against Django, DRF, and ADRF under the same PostgreSQL workload (`benchmarks/`, five stacks, `--repeat` medians, README charts; identical response fingerprints).
-- [ ] Find why `asyncdjango-drf` at 100 concurrent clients is bimodal (rounds of 67-264 req/s while plain `asyncdjango` stays at 270-390; `docs/benchmarks.md`). cProfile on Windows was too noisy to separate good and bad rounds; try Linux and py-spy.
+- [x] `asyncdjango-drf` at 100 clients is not bimodal behind a real server on Linux: rounds of 202-220 req/s (read) and 245-250 (write). The 67-264 spread came from the in-process Windows harness, where the load generator shares the event loop with the stack.
 - [x] Document configuration, migrations, deployment, security, and supported versions (`docs/deployment.md`, `docs/compatibility.md`, `docs/porting.md`).
-- [ ] Port a slice of a production ADRF application (imports, `sync_to_async` → `ais_valid`/`adata`/`sync_to_native`, `async_capable` on its middleware) and run its test suite.
+- [ ] Port a production ADRF application and run its test suite. Ported on 2026-10-28 (a CRM's `feat/asyncdjango` branch: adrf imports replaced, 424 of 490 `sync_to_async` calls now `ais_valid`/`sync_to_native`, WhiteNoise limited to static paths, `search_path` tenancy kept per pooled connection, blocking calls moved off the loop); its test suite has not been run yet.
 - [x] GitHub Actions workflow: suite on Python 3.12-3.14 x PostgreSQL 14/18 service containers; optional benchmark job.
-- [ ] Confirm the first Linux CI run is green (verified locally on Windows with Python 3.12 and 3.13 only).
-- [ ] Benchmark with a real server (uvicorn + an HTTP load generator) on Linux.
-- [ ] Decide whether to support Django 5.2 LTS (untested; the patched internals are similar).
-- [ ] Define release criteria for 1.0 (a production application running on it in staging).
+- [x] Linux CI is green: Python 3.12/3.13/3.14 x PostgreSQL 14/18 on every push to `main` since 2026-10-28.
+- [x] Real-server benchmark on Linux: `benchmarks/server.py` (uvicorn/gunicorn + wrk, CPU-pinned) and the `server benchmark` workflow; results in `docs/benchmarks.md`.
+- [x] Support Django 5.2 LTS: the full suite passes on 5.2.18, every adapted function is identical to 6.0.3 apart from comments, and CI runs 5.2 on Python 3.12/PostgreSQL 14 and Python 3.14/PostgreSQL 18.
+- [ ] Define release criteria for 1.0 (a production application running on it in staging). A starting point to decide on: the CRM port's test suite passes; it runs in staging under real traffic for an agreed period without pool exhaustion, cross-tenant reads, or event-loop stalls; CI stays green on every supported Python, Django, and PostgreSQL version; and the public API (`sync_to_native`, settings, `asyncdjango.rest_framework`) is frozen with a deprecation policy.

@@ -89,7 +89,8 @@ class CoverageTests(SimpleTestCase):
         self.assert_all_native(type(employee.reports))    # self-referential FK
         from django.contrib.auth.models import Group, Permission
 
-        self.assert_all_native(create_generic_related_manager(Permission._default_manager.__class__, None))
+        self.assert_all_native(
+            create_generic_related_manager(Permission._default_manager.__class__, None))
         self.assertTrue(is_native(Group.objects.none().aget))
 
 

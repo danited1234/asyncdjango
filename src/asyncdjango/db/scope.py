@@ -18,8 +18,9 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import sys
+from collections.abc import Callable
 from types import FrameType
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from asgiref.sync import AsyncToSync
 

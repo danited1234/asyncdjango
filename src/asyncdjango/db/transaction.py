@@ -26,7 +26,8 @@ import functools
 import inspect
 import logging
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from asgiref.sync import async_to_sync
 from django.db import DEFAULT_DB_ALIAS

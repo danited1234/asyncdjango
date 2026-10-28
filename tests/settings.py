@@ -36,6 +36,7 @@ DATABASE_ROUTERS = ["tests.testapp.routers.OtherRouter"]
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.auth",
+    "django.contrib.sessions",
     "rest_framework",
     "asyncdjango",
     "tests.testapp",

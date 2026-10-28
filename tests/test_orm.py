@@ -5,6 +5,7 @@ import datetime
 import decimal
 import threading
 
+import psycopg
 from django.core.exceptions import SynchronousOnlyOperation
 from django.db import IntegrityError, connections, transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
@@ -15,6 +16,9 @@ from asyncdjango.diagnostics import ThreadOffloadDetector
 from asyncdjango.test import NativeTransactionTestCase
 
 from .testapp.models import AuditLog, Employee, Note, Organization, Profile, Tag
+
+# libpq 17 added a non-blocking cancel API; psycopg cancels from a thread before it.
+THREAD_FREE_CANCEL = psycopg.pq.version() >= 170000
 
 
 class OffloadGuardedTestCase(NativeTransactionTestCase):
@@ -27,6 +31,10 @@ class OffloadGuardedTestCase(NativeTransactionTestCase):
     async def asyncTearDown(self):
         await self.offload.__aexit__(None, None, None)
         await super().asyncTearDown()
+
+    def allow_cancel_thread(self):
+        if not THREAD_FREE_CANCEL:
+            self.offload.allow = self.offload.allow | {"cancel"}
 
     async def assert_pool_idle(self, alias="default"):
         """Every pooled connection is back (allowing for one still opening)."""
@@ -97,7 +105,7 @@ class QueryTests(OffloadGuardedTestCase):
 
     async def test_json_decimal_and_timezones(self):
         org = await self.make_org()
-        hired = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)
+        hired = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
         await Employee.objects.acreate(
             organization=org, email="x@example.com", salary=decimal.Decimal("12.50"),
             data={"skills": ["sql"], "level": 3}, hired_at=hired,
@@ -182,7 +190,8 @@ class RelationTests(OffloadGuardedTestCase):
         self.assertEqual([e.pk async for e in boss.reports.all()], [employee.pk])
         await boss.reports.aremove(employee)
         self.assertEqual(await boss.reports.acount(), 0)
-        python, sql = await Tag.objects.acreate(name="python"), await Tag.objects.acreate(name="sql")
+        python = await Tag.objects.acreate(name="python")
+        sql = await Tag.objects.acreate(name="sql")
         await employee.tags.aset([python, sql])
         self.assertEqual(await employee.tags.acount(), 2)
         await employee.tags.aremove(python)
@@ -238,7 +247,7 @@ class StreamingTests(OffloadGuardedTestCase):
             for number in range(2500)
         )
         seen = 0
-        async for employee in Employee.objects.order_by("id").aiterator(chunk_size=1000):
+        async for _employee in Employee.objects.order_by("id").aiterator(chunk_size=1000):
             seen += 1
         self.assertEqual(seen, 2500)
         emails = [e async for e in Employee.objects.values_list("email", flat=True)
@@ -286,9 +295,7 @@ class ConcurrencyTests(OffloadGuardedTestCase):
         self.assertEqual(threads, {thread})
 
     async def test_cancelled_query_returns_connection(self):
-        # psycopg cancels the server-side query with a thread unless libpq >= 17
-        # provides the non-blocking cancel API; that is cancellation-only.
-        self.offload.allow = self.offload.allow | {"cancel"}
+        self.allow_cancel_thread()
         await Organization.objects.acreate(name="warm")
         task = asyncio.create_task(
             Organization.objects.extra(select={"slept": "pg_sleep(5)"}).afirst()

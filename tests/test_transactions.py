@@ -6,12 +6,12 @@ import warnings
 from django.db import IntegrityError
 from django.db import transaction as django_transaction
 from django.db.transaction import TransactionManagementError
+from django.test import override_settings
 
-from asyncdjango.db import pool_stats, transaction
+from asyncdjango.db import transaction
 from asyncdjango.db.patch import SyncFallbackWarning
 from asyncdjango.exceptions import CrossTaskConnectionError, NativeAsyncUnsupported
 from asyncdjango.test import NativeTransactionTestCase
-from django.test import override_settings
 
 from .test_orm import OffloadGuardedTestCase
 from .testapp.models import Organization, SqliteNote

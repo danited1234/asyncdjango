@@ -22,6 +22,8 @@ With `"asyncdjango"` in `INSTALLED_APPS` (and `PATCH_ORM`, the default):
 | Signal receivers | Synchronous receivers that query run natively; async receivers connected to `post_save` etc. are awaited. |
 | `connection_created`, `connection.execute_wrapper()` | Work per pooled connection checkout (for example, `search_path` multi-tenancy). |
 | `sync_to_native(fn)` | Runs any ORM-only synchronous function natively; a replacement for `sync_to_async` around ORM code. |
+| `cursor.copy()` (COPY) | Inside native code, Django's cursor gives psycopg's COPY API (`write`, `write_row`, `read`, `read_row`, `rows`, iteration) with I/O awaited; it joins an open `atomic()` block. Errors are psycopg's, as with Django's own cursor. |
+| Database session backends | `SessionStore.asave()` (db and cached_db), and so `alogin()`, `acycle_key()`, `aflush()`. |
 | `NativeASGIHandler` | Django's request cycle; see the README for what moves off threads. |
 | Async middleware | Function and class middleware with `async_capable = True`, and async `process_view`/`process_exception`/`process_template_response` hooks. |
 | Django's built-in middleware | `MiddlewareMixin`'s `process_request`/`process_response` run natively instead of in a thread for built-ins that do no blocking I/O (session-dependent ones only with the database or signed-cookie session engine). See [guide.md §7](guide.md#7-middleware). |
@@ -117,12 +119,13 @@ implementation with `SyncFallbackWarning` when
 
 Also not covered:
 
-- `cursor.copy()` (COPY) through Django's cursor; use psycopg's async API on a
-  raw connection.
-- Django's session `SessionStore.asave()`, `contrib.auth` backends'
-  `aauthenticate()`/`aget_user()` default implementations, and other contrib
-  async APIs not listed above keep Django's thread-based behavior. Django's
-  `ModelBackend` async methods are already built on the patched ORM.
+- `contrib.auth` backends' `aauthenticate()`/`aget_user()` default
+  implementations (`BaseBackend`, for custom backends without async methods),
+  `acheck_password()` (password hashing is deliberately slow CPU work), and
+  other contrib async APIs not listed above keep Django's thread-based
+  behavior. Django's `ModelBackend` async methods are already built on the
+  patched ORM, and the database session backends' `SessionStore.asave()` is
+  native (so `alogin()`, `acycle_key()`, and `aflush()` are too).
 - Synchronous iterators in `StreamingHttpResponse` are consumed in a thread by
   Django; use async iterators.
 
@@ -144,5 +147,6 @@ Also not covered:
   an IP address for `HOST` to avoid it entirely.
 - **Query cancellation:** when a request is cancelled mid-query (client
   disconnect), psycopg cancels the server-side query. With libpq 17+ that is
-  non-blocking; with older libpq (psycopg-binary 3.3.2 bundles 16.9) psycopg
-  sends the cancel request from a thread.
+  non-blocking (psycopg-binary 3.3.6 bundles libpq 18.4; the test suite checks
+  that no thread is used); with older libpq (psycopg-binary 3.3.2 bundles 16.9)
+  psycopg sends the cancel request from a thread.

@@ -2,9 +2,10 @@
 
 ## Supported versions
 
-Python 3.12+ (Django 6.0's minimum), Django 6.0.x, Django REST framework 3.16.x (optional),
-psycopg 3.2+ with psycopg-pool 3.2+, greenlet 3.0+, and PostgreSQL 14+
-(Django 6.0's minimum). The verified combination is listed in
+Python 3.12+ (Django 6.0's minimum, and asyncdjango's on 5.2 too), Django
+6.0.x or 5.2.x LTS, Django REST framework 3.16.x (optional), psycopg 3.2+ with
+psycopg-pool 3.2+, greenlet 3.0+, and PostgreSQL 14+ (the minimum of both
+Django releases). The verified combination is listed in
 [upstream.md](upstream.md). Linux and macOS work as is. Windows works for
 development with a selector event loop (see [compatibility.md](compatibility.md)).
 

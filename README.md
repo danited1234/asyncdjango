@@ -10,8 +10,8 @@ async driver and a connection pool.
 Your models, managers, querysets, migrations, admin, and settings remain
 Django's own. Nothing about the model layer is reimplemented.
 
-> Status: 0.1.0a1, alpha. Verified with Python 3.13, Django 6.0.3,
-> DRF 3.16.1, psycopg 3.3, PostgreSQL 18. See [docs/upstream.md](docs/upstream.md).
+> Status: 0.1.0a1, alpha. Verified with Python 3.12-3.14, Django 6.0.3 and
+> 5.2.18 LTS, DRF 3.16.1, psycopg 3.3, PostgreSQL 14 and 18. See [docs/upstream.md](docs/upstream.md).
 
 ## Why
 
@@ -50,6 +50,14 @@ At 50 concurrent clients on a 4-core laptop:
   thread instead of one per in-flight request (56 threads).
 - **For a request that waits 50 ms on the database**, every stack is limited
   by the 20-connection pool (270–306 req/s).
+
+Behind a real server on Linux (uvicorn or gunicorn, driven by wrk on a
+4-vCPU GitHub runner), the ADRF and Django comparisons hold (8.6 times ADRF's
+reads, 28-35% more than Django's async views). Synchronous DRF under gunicorn
+serves 10-22% more requests on these CPU-bound endpoints, since its threads
+use slightly more than the one core an event loop gets, but needs 107 threads
+at 100 clients against 5, and its 99th-percentile latency was 4 to 5 times
+higher.
 
 Results vary between runs and machines. See
 [docs/benchmarks.md](docs/benchmarks.md) for the method, all results with
@@ -236,12 +244,18 @@ its upstream notices in [licenses/](licenses/).
 
 ```console
 python -m venv .venv
-.venv/Scripts/python -m pip install -e ".[drf,test]"   # .venv/bin/python on Linux/macOS
+.venv/Scripts/python -m pip install -e ".[drf,test,dev]"   # .venv/bin/python on Linux/macOS
+.venv/Scripts/pre-commit install
 $env:ASYNCDJANGO_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/asyncdjango"
 .venv/Scripts/python -m django test tests --settings=tests.settings
 ```
 
 The test runner creates and drops `test_<database name>`.
+
+`pre-commit install` adds a git hook that runs `ruff check --fix` (rules in
+`pyproject.toml`) and whitespace/YAML/TOML checks on the files in each commit.
+Run every hook on the whole tree with `pre-commit run --all-files`. CI runs the
+same hooks in the `lint` job.
 
 GitHub Actions (`.github/workflows/tests.yml`) runs the suite on every push
 and pull request against live PostgreSQL 14 and 18 service containers, on
