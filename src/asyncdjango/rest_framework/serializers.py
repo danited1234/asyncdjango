@@ -21,9 +21,9 @@ from typing import Any
 
 from django.db import models
 from rest_framework import serializers as drf
-from rest_framework.serializers import *  # noqa: F401,F403  (fields, relations, ...)
 from rest_framework.fields import SkipField
 from rest_framework.relations import PKOnlyObject
+from rest_framework.serializers import *  # noqa: F403  (fields, relations, ...)
 from rest_framework.serializers import (  # noqa: F401  (re-exported like DRF's module)
     LIST_SERIALIZER_KWARGS,
     LIST_SERIALIZER_KWARGS_REMOVE,
@@ -33,8 +33,7 @@ from rest_framework.utils.serializer_helpers import ReturnDict, ReturnList
 
 from ..db.scope import run_native
 from ._compat import resolve
-from .fields import SerializerMethodField  # noqa: F401  (async-capable)
-
+from .fields import SerializerMethodField  # must follow the * import: replaces DRF's
 
 _custom_async_classes: dict[type, bool] = {}
 

@@ -13,21 +13,20 @@ synchronous ORM use from async code still fails loudly.
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 from importlib import import_module
 from typing import Any
 
 import psycopg
+from django.db.backends.base.base import BaseDatabaseWrapper
+from django.db.backends.postgresql import base as pg_base
+from django.db.backends.postgresql.psycopg_any import is_psycopg3
 from psycopg import sql as psycopg_sql
 from psycopg.client_cursor import ClientCursorMixin
 from psycopg.pq import Format
 
-from django.db.backends.base.base import BaseDatabaseWrapper
-from django.db.backends.postgresql import base as pg_base
-from django.db.backends.postgresql.psycopg_any import is_psycopg3
-
-from .bridge import await_, in_native_context
 from . import pool as pool_registry
+from .bridge import await_, in_native_context
 
 
 class AsyncServerSideCursor(ClientCursorMixin, psycopg.AsyncServerCursor):
@@ -284,7 +283,7 @@ class NativeWrapperMixin:
         return GreenletCursor(cursor, self.connection)
 
 
-@lru_cache(maxsize=None)
+@cache
 def wrapper_class(engine: str) -> type | None:
     """Return the native wrapper class for an ENGINE, or None if unsupported."""
     if not is_psycopg3:

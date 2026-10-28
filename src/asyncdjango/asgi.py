@@ -38,23 +38,22 @@ import django
 from asgiref.sync import AsyncToSync, SyncToAsync, iscoroutinefunction
 from django.conf import settings
 from django.core import signals
+from django.core.exceptions import BadRequest, PermissionDenied, RequestAborted
 from django.core.handlers import base as base_handler
 from django.core.handlers import exception as exception_handler
 from django.core.handlers.asgi import ASGIHandler, get_script_prefix
-from django.core.exceptions import BadRequest, PermissionDenied, RequestAborted
+from django.db import connections
 from django.http import Http404
 from django.http.multipartparser import MultiPartParserError
-from django.db import connections
 from django.urls import set_script_prefix, set_urlconf
 from django.utils.log import log_response
 
-from . import conf
 from ._threads import run_error_reporting, run_in_request_thread
-from .middleware import native_middleware_paths
 from .db.bridge import await_
 from .db.pool import close_pools, open_pools
 from .db.scope import run_native, sync_to_native
 from .db.transaction import Atomic
+from .middleware import native_middleware_paths
 from .signals import asend as native_asend
 
 logger = logging.getLogger("asyncdjango.asgi")
@@ -278,7 +277,7 @@ class NativeASGIHandler(ASGIHandler):
                 response = await middleware_method(request, response)
                 self.check_response(
                     response, middleware_method,
-                    name="%s.process_template_response"
+                    name="%s.process_template_response"  # noqa: UP031 (as in Django)
                     % (middleware_method.__self__.__class__.__name__,),
                 )
             try:

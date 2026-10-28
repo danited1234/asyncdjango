@@ -12,7 +12,6 @@ from asgiref.sync import async_to_sync
 
 from ..db.bridge import await_, in_native_context
 
-
 # Values serializer fields commonly return; none of them is awaitable.
 _PLAIN_TYPES = frozenset({
     str, int, float, bool, type(None), bytes, dict, list, tuple,

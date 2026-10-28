@@ -62,7 +62,7 @@ class AsyncHelperJWTAuthentication(BaseAuthentication):
         try:
             organization = await Organization.objects.aget(name=header.split(" ", 1)[1])
         except Organization.DoesNotExist:
-            raise exceptions.AuthenticationFailed("User not found")
+            raise exceptions.AuthenticationFailed("User not found") from None
         return StaffUser(organization), header
 
     def authenticate_header(self, request):

@@ -21,8 +21,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import warnings
+from collections.abc import Callable
 from itertools import islice
-from typing import Any, Callable
+from typing import Any
 
 from django.db import router
 from django.db.models import Model

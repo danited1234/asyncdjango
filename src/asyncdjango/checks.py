@@ -7,7 +7,6 @@ from django.core.checks import Tags, Warning, register
 from django.utils.module_loading import import_string
 
 
-
 @register(Tags.database)
 def check_native_databases(app_configs, **kwargs):
     from django.db import connections

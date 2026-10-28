@@ -91,7 +91,7 @@ async def asend(signal: Signal, sender: Any, **named: Any) -> list[tuple[Any, An
             receiver(signal=signal, sender=sender, **named)
             for receiver in async_receivers
         ))
-        responses.extend(zip(async_receivers, async_responses))
+        responses.extend(zip(async_receivers, async_responses, strict=True))
     return responses
 
 

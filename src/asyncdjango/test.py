@@ -91,14 +91,12 @@ class NativeTestCase(_NativeAsyncTestCase):
 
         scope = _current_scope.get()
         try:
+            def rollback(alias: str, atomic: Any) -> None:
+                transaction.set_rollback(True, using=alias)
+                atomic.__exit__(None, None, None)
+
             while self._native_atomics:
-                alias, atomic = self._native_atomics.pop()
-
-                def rollback() -> None:
-                    transaction.set_rollback(True, using=alias)
-                    atomic.__exit__(None, None, None)
-
-                await greenlet_spawn(rollback)
+                await greenlet_spawn(rollback, *self._native_atomics.pop())
         finally:
             _current_scope.reset(self._native_scope_token)
             await scope.aclose()

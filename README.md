@@ -236,12 +236,18 @@ its upstream notices in [licenses/](licenses/).
 
 ```console
 python -m venv .venv
-.venv/Scripts/python -m pip install -e ".[drf,test]"   # .venv/bin/python on Linux/macOS
+.venv/Scripts/python -m pip install -e ".[drf,test,dev]"   # .venv/bin/python on Linux/macOS
+.venv/Scripts/pre-commit install
 $env:ASYNCDJANGO_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/asyncdjango"
 .venv/Scripts/python -m django test tests --settings=tests.settings
 ```
 
 The test runner creates and drops `test_<database name>`.
+
+`pre-commit install` adds a git hook that runs `ruff check --fix` (rules in
+`pyproject.toml`) and whitespace/YAML/TOML checks on the files in each commit.
+Run every hook on the whole tree with `pre-commit run --all-files`. CI runs the
+same hooks in the `lint` job.
 
 GitHub Actions (`.github/workflows/tests.yml`) runs the suite on every push
 and pull request against live PostgreSQL 14 and 18 service containers, on

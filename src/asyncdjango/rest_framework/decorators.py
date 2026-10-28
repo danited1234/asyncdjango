@@ -8,7 +8,8 @@ re-exported unchanged.
 from __future__ import annotations
 
 import types
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from asgiref.sync import iscoroutinefunction
 from rest_framework.decorators import (  # noqa: F401  (re-exported)
@@ -32,7 +33,7 @@ def api_view(http_method_names: list[str] | None = None) -> Callable[[Any], Any]
             "@api_view missing list of allowed HTTP methods"
         )
         assert isinstance(http_method_names, (list, tuple)), (
-            "@api_view expected a list of strings, received %s"
+            "@api_view expected a list of strings, received %s"  # noqa: UP031 (as in DRF)
             % type(http_method_names).__name__
         )
         WrappedAPIView = type("WrappedAPIView", (APIView,), {"__doc__": func.__doc__})

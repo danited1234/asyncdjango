@@ -19,7 +19,8 @@ tests/test_guards.py). These remain on threads on purpose:
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from asgiref.sync import sync_to_async
 

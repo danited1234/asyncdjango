@@ -41,6 +41,8 @@ drf = ["djangorestframework>=3.16,<3.17"]
 test = ["channels>=4.2"]
 # Only for benchmarks/ (the ADRF baseline and the charts).
 bench = ["adrf==0.1.12", "matplotlib>=3.8"]
+# Linting and the git hooks (see README, "Development").
+dev = ["pre-commit>=4", "ruff==0.14.2"]
 
 [project.urls]
 Homepage = "https://github.com/danited1234/asyncdjango"
@@ -50,3 +52,31 @@ Changelog = "https://github.com/danited1234/asyncdjango/releases"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["**/migrations"]
+# pre-commit passes file names explicitly; keep the excludes for those too.
+force-exclude = true
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",  # pycodestyle, pyflakes
+    "I",            # import order
+    "B",            # bugbear
+    "UP",           # pyupgrade
+    "ASYNC",        # blocking calls and other asyncio mistakes
+    "RUF100",       # unused noqa
+]
+ignore = [
+    "UP047",     # PEP 695 type parameters: TypeVar reads fine here
+    "ASYNC109",  # open_pools(timeout=...) mirrors psycopg_pool's API
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests block the loop and touch lazy attributes on purpose.
+"tests/**" = ["B018", "ASYNC110", "ASYNC251"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["asyncdjango", "tests", "benchmarks"]

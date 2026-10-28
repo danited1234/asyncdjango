@@ -97,7 +97,7 @@ class QueryTests(OffloadGuardedTestCase):
 
     async def test_json_decimal_and_timezones(self):
         org = await self.make_org()
-        hired = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)
+        hired = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
         await Employee.objects.acreate(
             organization=org, email="x@example.com", salary=decimal.Decimal("12.50"),
             data={"skills": ["sql"], "level": 3}, hired_at=hired,
@@ -182,7 +182,8 @@ class RelationTests(OffloadGuardedTestCase):
         self.assertEqual([e.pk async for e in boss.reports.all()], [employee.pk])
         await boss.reports.aremove(employee)
         self.assertEqual(await boss.reports.acount(), 0)
-        python, sql = await Tag.objects.acreate(name="python"), await Tag.objects.acreate(name="sql")
+        python = await Tag.objects.acreate(name="python")
+        sql = await Tag.objects.acreate(name="sql")
         await employee.tags.aset([python, sql])
         self.assertEqual(await employee.tags.acount(), 2)
         await employee.tags.aremove(python)
@@ -238,7 +239,7 @@ class StreamingTests(OffloadGuardedTestCase):
             for number in range(2500)
         )
         seen = 0
-        async for employee in Employee.objects.order_by("id").aiterator(chunk_size=1000):
+        async for _employee in Employee.objects.order_by("id").aiterator(chunk_size=1000):
             seen += 1
         self.assertEqual(seen, 2500)
         emails = [e async for e in Employee.objects.values_list("email", flat=True)

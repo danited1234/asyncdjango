@@ -6,8 +6,12 @@ class AsyncDjangoConfig(AppConfig):
     verbose_name = "Native async Django"
 
     def ready(self) -> None:
-        from . import checks  # noqa: F401  (registers system checks)
-        from . import conf, middleware, signals
+        from . import (
+            checks,  # noqa: F401  (registers system checks)
+            conf,
+            middleware,
+            signals,
+        )
         from .db import patch, scope
 
         scope.install_connection_hook()
