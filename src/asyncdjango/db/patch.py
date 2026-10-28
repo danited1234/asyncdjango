@@ -267,6 +267,46 @@ def _wrap_manager_factory(module: Any, name: str) -> None:
     _set(module, name, create)
 
 
+def _native_session_asave(original: Callable[..., Any]) -> Callable[..., Any]:
+    """``SessionStore.asave()`` for the database backends, without a thread.
+
+    Adapted from Django 6.0.3's ``django.contrib.sessions.backends.db``
+    (BSD-3-Clause; see docs/upstream.md), which wraps the transaction in
+    ``sync_to_async`` because Django's ``atomic()`` is not an async context
+    manager. ``cached_db`` reaches this through ``super().asave()`` and keeps
+    its own cache write.
+    """
+    from django.contrib.sessions.backends.base import CreateError, UpdateError
+    from django.db import DatabaseError, IntegrityError, transaction
+
+    @functools.wraps(original)
+    async def asave(self: Any, must_create: bool = False) -> Any:
+        if in_sync_caller_loop():
+            return await original(self, must_create)
+        if self.session_key is None:
+            return await self.acreate()
+        data = await self._aget_session(no_load=must_create)
+        obj = await self.acreate_model_instance(data)
+        using = router.db_for_write(self.model, instance=obj)
+        if not is_native_alias(using):
+            return await _fallback(original, {using}, (self, must_create), {})
+        try:
+            async with transaction.atomic(using=using):
+                await obj.asave(force_insert=must_create, force_update=not must_create,
+                                using=using)
+        except IntegrityError as exc:
+            if must_create:
+                raise CreateError from exc
+            raise
+        except DatabaseError as exc:
+            if not must_create:
+                raise UpdateError from exc
+            raise
+
+    asave.__asyncdjango_native__ = True
+    return asave
+
+
 def native_queryset_methods() -> dict[str, Any]:
     """Native replacements for Django's QuerySet async methods, by name."""
     QuerySet = query_module.QuerySet
@@ -328,6 +368,13 @@ def install() -> None:
         pass
     else:
         _wrap_manager_factory(contenttypes_fields, "create_generic_related_manager")
+    from django.apps import apps
+
+    if apps.is_installed("django.contrib.sessions"):
+        from django.contrib.sessions.backends import db as session_db
+
+        _set(session_db.SessionStore, "asave",
+             _native_session_asave(vars(session_db.SessionStore)["asave"]))
     from django.db import transaction as django_transaction
 
     from .transaction import Atomic

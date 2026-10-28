@@ -36,7 +36,7 @@ Django app on real Django models. See README.md for the architecture.
 - [x] Opt-in `NativeManager`/`NativeModelMixin` for `PATCH_ORM = False`.
 - [x] Non-PostgreSQL aliases raise `NativeAsyncUnsupported`, or fall back with `SyncFallbackWarning`.
 - [x] ContentType cache warmed at startup for generic relations.
-- [ ] Native `SessionStore` async methods (db backend `asave` uses a thread) and remaining contrib async helpers.
+- [x] Native `SessionStore.asave()` for the db and cached_db session backends (the only DB-bound contrib async method left on a thread; `BaseBackend` auth defaults and `acheck_password` stay threaded on purpose).
 - [ ] `COPY` through the facade (currently raises; use psycopg directly).
 
 ## 2. ASGI and REST

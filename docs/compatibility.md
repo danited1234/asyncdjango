@@ -119,10 +119,13 @@ Also not covered:
 
 - `cursor.copy()` (COPY) through Django's cursor; use psycopg's async API on a
   raw connection.
-- Django's session `SessionStore.asave()`, `contrib.auth` backends'
-  `aauthenticate()`/`aget_user()` default implementations, and other contrib
-  async APIs not listed above keep Django's thread-based behavior. Django's
-  `ModelBackend` async methods are already built on the patched ORM.
+- `contrib.auth` backends' `aauthenticate()`/`aget_user()` default
+  implementations (`BaseBackend`, for custom backends without async methods),
+  `acheck_password()` (password hashing is deliberately slow CPU work), and
+  other contrib async APIs not listed above keep Django's thread-based
+  behavior. Django's `ModelBackend` async methods are already built on the
+  patched ORM, and the database session backends' `SessionStore.asave()` is
+  native (so `alogin()`, `acycle_key()`, and `aflush()` are too).
 - Synchronous iterators in `StreamingHttpResponse` are consumed in a thread by
   Django; use async iterators.
 

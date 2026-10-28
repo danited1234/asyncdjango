@@ -34,6 +34,7 @@ Installed from `AsyncDjangoConfig.ready()`:
 | `QuerySet`, `RawQuerySet`, `Model` async methods, `aprefetch_related_objects` | Native implementations | `PATCH_ORM` |
 | Related-manager factories (`create_reverse_many_to_one_manager`, `create_forward_many_to_many_manager`, `create_generic_related_manager`) | Native async methods on the generated classes | `PATCH_ORM` |
 | `django.db.transaction.Atomic` | Adds `__aenter__`/`__aexit__` and `async def` decoration | `PATCH_ORM` |
+| `django.contrib.sessions.backends.db.SessionStore.asave` (also used by `cached_db`) | Native transaction instead of `sync_to_async` | `PATCH_ORM` and `django.contrib.sessions` installed |
 | `django.utils.deprecation.MiddlewareMixin.__acall__` | Runs `process_request`/`process_response` natively | Only for classes on the native middleware list |
 
 `asyncdjango/_threads.py` contains the only deliberate thread offloads
@@ -66,6 +67,7 @@ used `sync_to_async` are executed. Their licenses are in `licenses/`, and
 | Django 6.0.3 | `django/core/handlers/exception.py`, `convert_exception_to_response()` | `asyncdjango/asgi.py`, `_native_convert_exception_to_response()` | `response_for_exception()` runs natively |
 | Django 6.0.3 | `django/dispatch/dispatcher.py`, `Signal.send()`, `send_robust()`, `asend()` | `asyncdjango/signals.py` | Async receivers awaited via the bridge; sync receivers of `asend` run natively |
 | Django 6.0.3 | `django/db/backends/postgresql/base.py`, `get_new_connection()`, `create_cursor()`, `_configure_connection()`, `CursorMixin.callproc()` | `asyncdjango/db/backend.py`, `asyncdjango/db/pool.py` | Async psycopg connections from a pool |
+| Django 6.0.3 | `django/contrib/sessions/backends/db.py`, `SessionStore.asave()` | `asyncdjango/db/patch.py`, `_native_session_asave()` | `async with transaction.atomic()` and `await obj.asave()` instead of a `sync_to_async` transaction |
 | DRF 3.16.1 | `rest_framework/views.py`, `APIView.dispatch()`, `check_permissions()`, `check_object_permissions()`, `check_throttles()` | `asyncdjango/rest_framework/views.py` | Async dispatch; async hook results awaited |
 | DRF 3.16.1 | `rest_framework/request.py`, `Request._authenticate()` | `asyncdjango/rest_framework/requests.py` | Async authenticators awaited |
 | DRF 3.16.1 | `rest_framework/serializers.py`, `BaseSerializer.many_init()`, `Serializer.to_representation()`, `ListSerializer.to_representation()` | `asyncdjango/rest_framework/serializers.py` | Default list class; async field representations awaited |
