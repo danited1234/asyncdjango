@@ -17,6 +17,10 @@ from psycopg.pq import TransactionStatus
 from psycopg_pool import AsyncConnectionPool
 
 from .. import conf
+from ..exceptions import UnsupportedEventLoop
+
+# psycopg's async mode needs add_reader(), which Windows' Proactor loop lacks.
+_ProactorEventLoop = getattr(asyncio, "ProactorEventLoop", None)
 
 _pools: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop, dict[str, AsyncConnectionPool]
@@ -154,6 +158,14 @@ async def get_pool(alias: str) -> AsyncConnectionPool:
     pool = pools.get(alias)
     if pool is not None:
         return pool
+    if _ProactorEventLoop is not None and isinstance(loop, _ProactorEventLoop):
+        # Otherwise every connection attempt fails in the pool's background
+        # workers and the caller only sees a PoolTimeout after `timeout` seconds.
+        raise UnsupportedEventLoop(
+            "psycopg's async mode cannot use Windows' ProactorEventLoop. Run a "
+            "SelectorEventLoop: uvicorn uses one with --reload or --workers, or "
+            "pass loop_factory=asyncio.SelectorEventLoop to asyncio.run()."
+        )
     lock = _locks.setdefault(loop, asyncio.Lock())
     async with lock:
         pool = pools.get(alias)

@@ -21,3 +21,12 @@ class NativeAsyncUnsupported(RuntimeError):
 
 class CrossTaskConnectionError(RuntimeError):
     """A task tried to use a database connection owned by another task."""
+
+
+class UnsupportedEventLoop(RuntimeError):
+    """The running event loop cannot drive psycopg's async connections.
+
+    On Windows that is the default ``ProactorEventLoop``: run a
+    ``SelectorEventLoop`` instead (uvicorn uses one with ``--reload`` or
+    ``--workers``).
+    """

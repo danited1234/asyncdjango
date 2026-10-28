@@ -216,3 +216,16 @@ class ShutdownTests(unittest.TestCase):
         # asyncio.run() cancels the pool's workers along with everything else;
         # connections must not outlive the loop (one leaked per Celery task).
         self.assertEqual(self.run_script(SCRIPT_REPEATED_LOOPS), "0")
+
+
+@unittest.skipUnless(hasattr(asyncio, "ProactorEventLoop"), "Windows only")
+class ProactorLoopTests(unittest.TestCase):
+    def test_pool_refuses_proactor_loop_immediately(self):
+        from asyncdjango.db.pool import get_pool
+        from asyncdjango.exceptions import UnsupportedEventLoop
+
+        started = time.monotonic()
+        with asyncio.Runner(loop_factory=asyncio.ProactorEventLoop) as runner:
+            with self.assertRaises(UnsupportedEventLoop):
+                runner.run(get_pool("default"))
+        self.assertLess(time.monotonic() - started, 5)

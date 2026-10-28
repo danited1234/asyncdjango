@@ -679,7 +679,7 @@ Pool sizing, servers, security, and observability are covered in
 | `CrossTaskConnectionError` | Concurrent tasks inside `transaction.atomic()`. Await sequentially inside the block, or move the concurrency outside it. |
 | `NativeAsyncUnsupported` | The query targets a non-PostgreSQL (or psycopg2) alias. Route it to PostgreSQL, or enable `ALLOW_SYNC_FALLBACK`. |
 | `OperationalError: couldn't get a connection after 30.00 sec` | Pool exhausted: too many concurrent requests holding connections, or long transactions. Raise `POOL.max_size` (within PostgreSQL's `max_connections`) or shorten transactions. |
-| `Psycopg cannot use the 'ProactorEventLoop'` | Windows default event loop. Use a selector event loop, WSL, or Docker. (`async_to_sync` from synchronous code is not affected unless `NATIVE_IN_ASYNC_TO_SYNC` is on.) |
+| `UnsupportedEventLoop` or `Psycopg cannot use the 'ProactorEventLoop'` | Windows default event loop. Use a selector event loop, WSL, or Docker. (`async_to_sync` from synchronous code is not affected unless `NATIVE_IN_ASYNC_TO_SYNC` is on.) |
 | Lifespan not supported / pools open only on the first request under Channels | `ProtocolTypeRouter` has no `"lifespan"` entry. Map it to the same handler as `"http"` ([§2](#asgi-entry-point)). |
 | Requests stall under load | Something blocks the loop: a sync client in a hook, heavy CPU work, or a large synchronous render. Find it with `EventLoopBlockDetector`; use async clients, `sync_to_async`, or more workers. |
 | `manage.py check` W002/W003 | Middleware running in a thread. See [§7](#7-middleware). |
