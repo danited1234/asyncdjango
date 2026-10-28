@@ -216,6 +216,34 @@ A `GenericRelation` manager looks up its `ContentType`. `NativeASGIHandler`
 fills Django's content-type cache at startup. In scripts, call
 `await asyncdjango.asgi.warm_content_types()` once first.
 
+### Concurrent queries
+
+Independent queries of one request can run at the same time, each on its own
+pooled connection, so a page that needs four queries waits for the slowest
+one rather than all four in turn:
+
+```python
+from asyncdjango import gather
+
+
+async def customer_page(request, pk):
+    customer, orders, open_tickets = await gather(
+        Customer.objects.aget(pk=pk),
+        Order.objects.filter(customer_id=pk).order_by("-created")[:20],  # a list
+        Ticket.objects.filter(customer_id=pk, open=True).acount(),
+    )
+```
+
+`gather()` takes coroutines and querysets (evaluated to lists) and returns
+their results in order. It runs at most `limit=4` at a time so one request
+cannot take the whole pool. If one raises, the others are cancelled and their
+connections returned before the exception propagates. Plain `asyncio.gather()`
+also works, without the limit or the cancellation.
+
+Each call runs outside any transaction, so `gather()` raises
+`CrossTaskConnectionError` inside `transaction.atomic()` (and so in views
+under `ATOMIC_REQUESTS`). Await the calls one after another there.
+
 ## 4. Transactions
 
 ```python
@@ -245,7 +273,7 @@ async def transfer(request):
   (`asyncio.gather(Model.objects.aget(...), ...)`) cannot share it and raise
   `CrossTaskConnectionError`. Await ORM calls one after another inside a
   transaction. Outside a transaction, `gather` gives each call its own
-  connection.
+  connection (see [Concurrent queries](#concurrent-queries)).
 - If an async generator opens `atomic()`, close the generator
   (`async with contextlib.aclosing(gen) as rows:`). An abandoned one is rolled
   back when it is garbage-collected, with a warning.
