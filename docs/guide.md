@@ -328,6 +328,34 @@ async def dashboard(request, pk):
     })
 ```
 
+### Email
+
+`asyncdjango.mail.EmailBackend` is Django's SMTP backend that, inside native
+code, talks to the server through `aiosmtplib` instead of `smtplib`. Every
+`EMAIL_*` setting works as in Django.
+
+```bash
+pip install "asyncdjango[mail]"
+```
+
+```python
+EMAIL_BACKEND = "asyncdjango.mail.EmailBackend"
+```
+
+```python
+from asyncdjango.mail import asend_mail
+
+await asend_mail("Welcome", body, "noreply@example.com", [user.email])
+```
+
+`asend_mail()` takes `send_mail()`'s arguments. `EmailMessage.send()`,
+`send_mail()` and `mail_admins()` called from native code (a signal receiver,
+a `save()` override, `sync_to_native`) are awaited the same way. Sync views,
+Celery tasks and management commands use `smtplib` as before. With another
+`EMAIL_BACKEND`, `asend_mail()` runs it in a worker thread. Rendering a large
+template or attachment is still CPU work on the loop; hand bulk mail to
+Celery.
+
 ### Reuse one client per worker
 
 Async clients keep connection pools tied to the event loop that created them.
@@ -392,7 +420,7 @@ authentication, permission and throttle classes, serializer fields,
 ### Do not
 
 - Use blocking clients (`requests`, synchronous `redis.Redis`, `boto3`,
-  `smtplib`) in async views or natively run hooks. They stall every request
+  `smtplib` or Django's SMTP backend) in async views or natively run hooks. They stall every request
   in the worker. Wrap them in `sync_to_async`, or use an async client.
 - Use Django's own cache backends from native code: `await cache.aget(...)`
   runs in a thread, and a synchronous `cache.get()` blocks the loop. Use

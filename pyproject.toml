@@ -40,8 +40,10 @@ dependencies = [
 drf = ["djangorestframework>=3.16,<3.17"]
 # asyncdjango.cache.RedisCache.
 redis = ["redis>=5.0"]
-# Only for asyncdjango's own test suite (tests/test_channels.py).
-test = ["channels>=4.2"]
+# asyncdjango.mail.EmailBackend.
+mail = ["aiosmtplib>=3"]
+# Only for asyncdjango's own test suite (Channels and a local SMTP server).
+test = ["channels>=4.2", "aiosmtpd>=1.4"]
 # Only for benchmarks/ (the ADRF baseline and the charts).
 bench = ["adrf==0.1.12", "matplotlib>=3.8"]
 # benchmarks/server.py (Linux, with wrk installed).
