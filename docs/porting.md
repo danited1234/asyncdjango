@@ -5,6 +5,26 @@ adrf views and serializers and `sync_to_async` around ORM code, which is the
 usual shape of an async DRF back end. Work on a branch and run your test
 suite after each step.
 
+`python -m asyncdjango.port` does the mechanical part of steps 2 and 3 and
+lists the rest:
+
+```bash
+python -m asyncdjango.port .            # report only
+python -m asyncdjango.port . --write    # apply the rewrites
+```
+
+It rewrites `from adrf... import` lines, `await
+sync_to_async(serializer.is_valid)(...)` into `await serializer.ais_valid(...)`
+and `await sync_to_async(lambda: serializer.data)()` into `await
+serializer.adata`. Every other `sync_to_async` call is listed under what the
+wrapped code appears to do, from the names it uses: blocking I/O (Stripe,
+email, storage, PDF rendering, password hashing: keep it), database only
+(candidates for `sync_to_native`), or unknown. The sort cannot see into
+functions defined in other modules, so read each candidate before switching
+it. `.venv`, `migrations`, and similar directories are skipped. On one
+production CRM it rewrote 110 lines and sorted 483 calls into 418 candidates,
+35 to keep, and 30 to read.
+
 ## 1. Install the app and the ASGI handler
 
 ```python
