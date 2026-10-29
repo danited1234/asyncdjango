@@ -2,14 +2,16 @@
 
     python -m benchmarks.server [--concurrency 25 50 100] [--duration 10] [--repeat 3]
                                 [--stacks ...] [--scenarios ...] [--output FILE]
-                                [--server-cpus 0,1] [--client-cpus 2,3]
+                                [--server-cpus 0,1] [--client-cpus 2,3] [--workers 1]
 
 Unlike benchmarks/run.py, which calls each application in-process, this starts
-the stack in its production shape (one uvicorn worker with uvloop and
-httptools for ASGI stacks; one gunicorn gthread worker with `concurrency`
-threads for the WSGI stack) and measures it over loopback HTTP with wrk. The
-server and wrk are pinned to separate CPUs with taskset; run PostgreSQL on
-others (benchmarks/docker/compose.yaml does this).
+the stack in its production shape (uvicorn workers with uvloop and httptools
+for ASGI stacks; gunicorn gthread workers with `concurrency` threads in total
+for the WSGI stack; one worker unless --workers says otherwise) and measures
+it over loopback HTTP with wrk. The server and wrk are pinned to separate CPUs
+with taskset; run PostgreSQL on others (benchmarks/docker/compose.yaml does
+this). With several workers each gets an equal share of the BENCH_POOL
+connections.
 
 Results use run.py's format, so benchmarks/plot.py charts them.
 """
@@ -48,15 +50,17 @@ def cpu_model() -> str:
     return "unknown"
 
 
-def server_command(stack: str, concurrency: int) -> list[str]:
+def server_command(stack: str, concurrency: int, workers: int) -> list[str]:
     address = f"127.0.0.1:{PORT}"
     if STACKS[stack].interface == "wsgi":
+        # One thread per client connection in total.
+        threads = -(-concurrency // workers)
         return ["gunicorn", "benchmarks.wsgi:application", "--worker-class", "gthread",
-                "--workers", "1", "--threads", str(concurrency), "--bind", address,
+                "--workers", str(workers), "--threads", str(threads), "--bind", address,
                 "--log-level", "warning"]
     return ["uvicorn", "benchmarks.asgi:application", "--host", "127.0.0.1",
-            "--port", str(PORT), "--workers", "1", "--loop", "uvloop", "--http", "httptools",
-            "--no-access-log", "--log-level", "warning"]
+            "--port", str(PORT), "--workers", str(workers), "--loop", "uvloop",
+            "--http", "httptools", "--no-access-log", "--log-level", "warning"]
 
 
 def request(method: str, path: str, body: bytes = b"") -> tuple[int, bytes]:
@@ -164,10 +168,13 @@ def wrk(scenario: str, concurrency: int, duration: float, cpus: str) -> dict:
 
 
 def run_case(stack: str, scenario: str, concurrency: int, duration: float, warmup: float,
-             server_cpus: str, client_cpus: str) -> dict:
-    env = {**os.environ, "BENCH_STACK": stack, "PYTHONPATH": os.getcwd()}
+             server_cpus: str, client_cpus: str, workers: int) -> dict:
+    # Split the pool between the workers: the same database connections in total.
+    pool = int(os.environ.get("BENCH_POOL", 20))
+    env = {**os.environ, "BENCH_STACK": stack, "PYTHONPATH": os.getcwd(),
+           "BENCH_POOL": str(max(1, pool // workers))}
     process = subprocess.Popen(["taskset", "-c", server_cpus,
-                                *server_command(stack, concurrency)], env=env)
+                                *server_command(stack, concurrency, workers)], env=env)
     try:
         wait_ready(process)
         digest = fingerprint(scenario)
@@ -215,6 +222,8 @@ def main() -> None:
     parser.add_argument("--scenarios", nargs="+", default=list(SCENARIOS),
                         choices=SCENARIOS)
     parser.add_argument("--server-cpus", default="0,1")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="server worker processes (uvicorn --workers, gunicorn --workers)")
     parser.add_argument("--client-cpus", default="2,3")
     parser.add_argument("--output", type=Path,
                         default=Path("benchmarks/results/server-latest.json"))
@@ -231,7 +240,10 @@ def main() -> None:
     env["packages"].update({name: metadata.version(name)
                             for name in ("uvicorn", "uvloop", "httptools", "gunicorn")})
     env.update({"load_generator": wrk_version.strip(), "server_cpus": args.server_cpus,
-                "client_cpus": args.client_cpus, "mode": "server", "cpu_model": cpu_model()})
+                "client_cpus": args.client_cpus, "mode": "server", "cpu_model": cpu_model(),
+                "workers": args.workers,
+                # Set by the workflow when it runs the benchmark in a memory-capped cgroup.
+                "memory_limit": os.environ.get("BENCH_MEMORY_LIMIT")})
     results = {"environment": env, "duration": args.duration,
                "pool_size": int(os.environ.get("BENCH_POOL", 20)), "repeat": args.repeat,
                "results": [], "runs": []}
@@ -240,7 +252,7 @@ def main() -> None:
     for round_number in range(1, args.repeat + 1):
         for scenario, concurrency, stack in cases:
             row = {**run_case(stack, scenario, concurrency, args.duration, args.warmup,
-                              args.server_cpus, args.client_cpus),
+                              args.server_cpus, args.client_cpus, args.workers),
                    "round": round_number}
             results["runs"].append(row)
             results["results"] = medians(results["runs"], cases)
