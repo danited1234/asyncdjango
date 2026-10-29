@@ -40,6 +40,14 @@ from benchmarks.worker import SCENARIOS, fingerprint_part, fingerprint_requests
 PORT = 8765
 
 
+def cpu_model() -> str:
+    # GitHub runners of one workflow run can differ; record which this was.
+    for line in Path("/proc/cpuinfo").read_text().splitlines():
+        if line.startswith("model name"):
+            return line.partition(":")[2].strip()
+    return "unknown"
+
+
 def server_command(stack: str, concurrency: int) -> list[str]:
     address = f"127.0.0.1:{PORT}"
     if STACKS[stack].interface == "wsgi":
@@ -223,7 +231,7 @@ def main() -> None:
     env["packages"].update({name: metadata.version(name)
                             for name in ("uvicorn", "uvloop", "httptools", "gunicorn")})
     env.update({"load_generator": wrk_version.strip(), "server_cpus": args.server_cpus,
-                "client_cpus": args.client_cpus, "mode": "server"})
+                "client_cpus": args.client_cpus, "mode": "server", "cpu_model": cpu_model()})
     results = {"environment": env, "duration": args.duration,
                "pool_size": int(os.environ.get("BENCH_POOL", 20)), "repeat": args.repeat,
                "results": [], "runs": []}

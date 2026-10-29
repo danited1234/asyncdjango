@@ -82,7 +82,7 @@ jobs:
                       "peak_db_connections", "errors")))
               env = data["environment"]
               title = (f"server-bench ${{ matrix.scenario }} server on ${{ matrix.cpus }} CPU"
-                       f" ({env['machine']} with {env['cpu_count']} CPUs)")
+                       f" ({env['cpu_model']} with {env['cpu_count']} CPUs)")
               print(f"::notice title={title}::" + "%0A".join(lines))
           EOF
 
