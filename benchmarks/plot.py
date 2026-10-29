@@ -1,4 +1,4 @@
-"""Draw the README charts from a results file (benchmarks/run.py).
+"""Draw the README charts from a results file (benchmarks/run.py or server.py).
 
     python -m benchmarks.plot benchmarks/results/latest.json [--out docs/images]
                               [--machine "Intel Core i5-8350U, 4 cores"]
@@ -27,28 +27,46 @@ SCENARIO_TITLES = {
     "slow": "I/O-bound: one 50 ms query",
 }
 
-# Rows top to bottom: DRF-style APIs, then plain Django async views.
-ORDER = ["asyncdjango-drf", "adrf", "drf", "asyncdjango", "django"]
-POSITIONS = {"asyncdjango-drf": 0, "adrf": 1, "drf": 2, "asyncdjango": 3.6, "django": 4.6}
+# Rows top to bottom: DRF-style APIs, then plain Django async views. The
+# connection-per-request row comes first so that its color (slot 5) only
+# borders slot 1, the pairing that passes the palette validator in both themes.
+ORDER = ["asyncdjango-drf-req", "asyncdjango-drf", "adrf", "drf", "asyncdjango", "django"]
+POSITIONS = {"asyncdjango-drf-req": 0, "asyncdjango-drf": 1, "adrf": 2, "drf": 3,
+             "asyncdjango": 4.6, "django": 5.6}
 
-# Categorical slots 1-4 of the validated default palette, per theme. Color
-# follows the stack family; both asyncdjango variants share slot 1.
+# Categorical slots 1-5 of the validated default palette, per theme. Color
+# follows the stack family; both default asyncdjango stacks share slot 1.
 THEMES = {
     "light": {
         "surface": "#fcfcfb", "text": "#0b0b0b", "text2": "#52514e",
         "grid": "#e6e5e1", "axis": "#c9c8c2",
         "series": {"asyncdjango-drf": "#2a78d6", "asyncdjango": "#2a78d6",
-                   "adrf": "#eb6834", "drf": "#1baf7a", "django": "#eda100"},
+                   "adrf": "#eb6834", "drf": "#1baf7a", "django": "#eda100",
+                   "asyncdjango-drf-req": "#e87ba4"},
     },
     "dark": {
         "surface": "#1a1a19", "text": "#ffffff", "text2": "#c3c2b7",
         "grid": "#33332f", "axis": "#55554f",
         "series": {"asyncdjango-drf": "#3987e5", "asyncdjango": "#3987e5",
-                   "adrf": "#d95926", "drf": "#199e70", "django": "#c98500"},
+                   "adrf": "#d95926", "drf": "#199e70", "django": "#c98500",
+                   "asyncdjango-drf-req": "#d55181"},
     },
 }
-# Secondary encoding for the line chart: plain Django views are dashed.
+# Secondary encoding for the line chart: plain Django views are dashed, and
+# the connection-per-request variant is dotted with square markers (lines can
+# cross any series there, not just their neighbors in the bar charts).
 DASHED = {"asyncdjango", "django"}
+DOTTED = {"asyncdjango-drf-req"}
+
+
+def line_style(stack: str) -> object:
+    if stack in DOTTED:
+        return (0, (1, 1.5))
+    return (0, (4, 2)) if stack in DASHED else "solid"
+
+
+def marker(stack: str) -> str:
+    return "s" if stack in DOTTED else "o"
 
 METRICS = {
     "throughput": ("rps", "Requests per second (higher is better)", "{:,.0f}"),
@@ -80,12 +98,17 @@ def clean_axes(ax, theme: dict, *, horizontal_grid: bool) -> None:
 def footer(fig, data: dict, machine: str | None) -> str:
     environment, packages = data["environment"], data["environment"]["packages"]
     repeat = data.get("repeat", 1)
+    if environment.get("mode") == "server":
+        harness = (f"uvicorn / gunicorn, {environment.get('workers', 1)} worker(s) on"
+                   f" {len(environment['server_cpus'].split(','))} vCPU, wrk")
+    else:
+        harness = "in-process, no HTTP server"
     text = (f"{machine or environment['processor']} · {environment['platform'].split('-')[0]}"
             f" · Python {environment['python']} · PostgreSQL {environment['postgresql']}"
             f" · Django {packages['Django']} · DRF {packages['djangorestframework']}"
             f" · ADRF {packages['adrf']} · {data['pool_size']}-connection pool for every stack"
             + (f" · median of {repeat} rounds" if repeat > 1 else "") +
-            f" · in-process, no HTTP server · {environment['date']}")
+            f" · {harness} · {environment['date']}")
     fig.text(0.01, 0.015, text, fontsize=7.5, color=plt.rcParams["axes.labelcolor"])
     return text
 
@@ -100,6 +123,7 @@ def bars(data: dict, metric: str, concurrency: int, theme: dict, meta: dict) -> 
                 if r["scenario"] == scenario and r["concurrency"] == concurrency}
         stacks = [s for s in ORDER if s in rows]
         values = [rows[s][key] for s in stacks]
+        order = [s for s in ORDER if any(r["stack"] == s for r in data["results"])]
         ax.barh([POSITIONS[s] for s in stacks], values, height=0.72,
                 color=[theme["series"][s] for s in stacks])
         top = max(values)
@@ -112,8 +136,8 @@ def bars(data: dict, metric: str, concurrency: int, theme: dict, meta: dict) -> 
         clean_axes(ax, theme, horizontal_grid=False)
         ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(
             lambda value, _: f"{value:,.0f}"))
-    axes[0][0].set_yticks([POSITIONS[s] for s in ORDER])
-    axes[0][0].set_yticklabels([STACKS[s].label for s in ORDER])
+    axes[0][0].set_yticks([POSITIONS[s] for s in order])
+    axes[0][0].set_yticklabels([STACKS[s].label for s in order])
     axes[0][0].invert_yaxis()
     fig.suptitle(f"{title}, {concurrency} concurrent clients", x=0.01, ha="left",
                  fontsize=12, fontweight="bold", color=theme["text"])
@@ -143,8 +167,7 @@ def scaling(data: dict, theme: dict, meta: dict) -> plt.Figure:
                             alpha=0.12, linewidth=0)
             ax.plot([r["concurrency"] for r in rows], [r["rps"] for r in rows],
                     color=theme["series"][stack], linewidth=2,
-                    linestyle=(0, (4, 2)) if stack in DASHED else "solid",
-                    marker="o", markersize=5,
+                    linestyle=line_style(stack), marker=marker(stack), markersize=5,
                     markeredgecolor=theme["surface"], markeredgewidth=1.5)
         concurrencies = sorted({r["concurrency"] for r in data["results"]})
         ax.set_xticks(concurrencies)
@@ -154,11 +177,12 @@ def scaling(data: dict, theme: dict, meta: dict) -> plt.Figure:
                      color=theme["text2"])
         clean_axes(ax, theme, horizontal_grid=True)
     axes[0][0].set_ylabel("requests per second")
-    handles = [Line2D([], [], color=theme["series"][s], linewidth=2, marker="o",
-                      markersize=5, linestyle=(0, (4, 2)) if s in DASHED else "solid",
-                      label=STACKS[s].label) for s in ORDER]
-    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 0.93),
-               ncols=len(handles), frameon=False, fontsize=9, handlelength=2.6,
+    present = [s for s in ORDER if any(r["stack"] == s for r in data["results"])]
+    handles = [Line2D([], [], color=theme["series"][s], linewidth=2, marker=marker(s),
+                      markersize=5, linestyle=line_style(s), label=STACKS[s].label)
+               for s in present]
+    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 0.95),
+               ncols=3, frameon=False, fontsize=9, handlelength=2.6,
                labelcolor=theme["text"])
     title = "Throughput as concurrency grows (higher is better)"
     if data.get("repeat", 1) > 1:
