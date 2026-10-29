@@ -189,8 +189,9 @@ def sync_to_native(fn: Callable[..., T]) -> Callable[..., Any]:
 
     Database I/O inside ``fn`` is awaited natively and the call joins any
     active ``transaction.atomic()`` block. Use it only for code whose blocking
-    work is database access: other blocking I/O (HTTP clients, file or cache
-    access) would stall the event loop for every request.
+    work is database access (or ``asyncdjango.cache.RedisCache``): other
+    blocking I/O (HTTP clients, files, other cache backends) would stall the
+    event loop for every request.
 
     Under ``async_to_sync()`` from synchronous code (a Celery task) ``fn`` runs
     on the calling thread, as ``sync_to_async`` would.

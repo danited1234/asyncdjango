@@ -23,6 +23,7 @@ With `"asyncdjango"` in `INSTALLED_APPS` (and `PATCH_ORM`, the default):
 | `connection_created`, `connection.execute_wrapper()` | Work per pooled connection checkout (for example, `search_path` multi-tenancy). |
 | `sync_to_native(fn)` | Runs any ORM-only synchronous function natively; a replacement for `sync_to_async` around ORM code. |
 | `cursor.copy()` (COPY) | Inside native code, Django's cursor gives psycopg's COPY API (`write`, `write_row`, `read`, `read_row`, `rows`, iteration) with I/O awaited; it joins an open `atomic()` block. Errors are psycopg's, as with Django's own cursor. |
+| `asyncdjango.cache.RedisCache` | Django's Redis cache backend; async methods, and sync methods called from native code, are awaited through `redis.asyncio`. |
 | Database session backends | `SessionStore.asave()` (db and cached_db), and so `alogin()`, `acycle_key()`, `aflush()`. |
 | `NativeASGIHandler` | Django's request cycle; see the README for what moves off threads. |
 | Async middleware | Function and class middleware with `async_capable = True`, and async `process_view`/`process_exception`/`process_template_response` hooks. |
@@ -35,8 +36,8 @@ With `"asyncdjango"` in `INSTALLED_APPS` (and `PATCH_ORM`, the default):
   path (model `save()` overrides, signal receivers, DRF authentication,
   permissions, throttles, filter backends, serializer fields and validators)
   runs on the event-loop thread. Database access in it is awaited; any other
-  blocking call (HTTP clients, `time.sleep`, synchronous Redis or cache
-  clients, large file reads) stalls every request on that worker. ADRF would
+  blocking call (HTTP clients, `time.sleep`, synchronous Redis clients,
+  Django's own cache backends, large file reads) stalls every request on that worker. ADRF would
   have run such code in a thread. Make those hooks `async def` or move the
   blocking work out; `asyncdjango.diagnostics.EventLoopBlockDetector` finds
   stalls in tests.

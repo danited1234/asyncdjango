@@ -120,9 +120,9 @@ on I/O other than the database:
 - **JWT authentication** whose synchronous `authenticate()` wraps an async
   helper in `async_to_sync` works unchanged. Simpler is to make
   `authenticate()` an `async def`.
-- **Throttles** using Django's cache with a synchronous Redis client block the
-  loop for each round trip. Write an async throttle (`async def
-  allow_request`) on an async Redis client, or accept the short stall.
+- **Throttles** and other code using Django's cache block the loop for each
+  Redis round trip. Switch `CACHES` to `asyncdjango.cache.RedisCache`, which
+  awaits those calls on the event loop.
 - **Signal receivers** that send email or call webhooks should hand the work
   to Celery (as `transaction.on_commit(lambda: task.delay(...))`), which also
   fixes the transaction-ordering problem.
