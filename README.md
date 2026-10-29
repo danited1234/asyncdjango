@@ -24,10 +24,13 @@ so a new connection per request).
 
 ## Benchmarks
 
-[`benchmarks/`](benchmarks/) runs the same endpoints on five stacks against
+[`benchmarks/`](benchmarks/) runs the same endpoints on each stack against
 the same PostgreSQL data and checks that every stack returns identical
-responses: asyncdjango with its DRF-style API or with plain Django views,
-ADRF, synchronous DRF on a threaded WSGI server, and Django's own async views.
+responses: asyncdjango with its DRF-style API (with and without
+`CONNECTION_PER_REQUEST`) or with plain Django views, ADRF, synchronous DRF on
+gunicorn, and Django's own async views. The charts are from the shape of a
+small VPS: real HTTP servers with two workers on two vCPUs and 2 GB of memory,
+driven by wrk on Linux (GitHub runners), the database on its own vCPU.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-throughput-dark.svg">
@@ -39,25 +42,21 @@ ADRF, synchronous DRF on a threaded WSGI server, and Django's own async views.
   <img alt="CPU time per request at 50 concurrent clients for each stack and scenario" src="docs/images/bench-cpu-light.svg">
 </picture>
 
-At 50 concurrent clients on a 4-core laptop:
+At 50 concurrent clients:
 
-- **Compared with ADRF**, the same view and serializer code served about 10
-  times the requests on the read endpoint (at a twelfth of the CPU per
-  request) and twice as many on the write endpoint.
-- **Compared with Django's async views**, plain Django views served about 30%
-  more requests at 35–40% less CPU per request.
-- **Compared with synchronous DRF**, throughput was about the same, on one
-  thread instead of one per in-flight request (56 threads).
+- **Plain Django views on asyncdjango** served the most requests: 21% more
+  reads and 6% more writes than synchronous DRF, and 21–24% more than
+  Django's own async views, at the lowest CPU per request.
+- **asyncdjango.rest_framework** served 6.9 times ADRF's reads and 1.9 times
+  its writes with the same view and serializer code. Against synchronous DRF
+  it served 0.89 times the reads and 0.78 times the writes, and 0.95 and 0.87
+  times with `CONNECTION_PER_REQUEST`; with one vCPU, 0.99–1.05 times the
+  reads and 0.93–0.95 times the writes.
 - **For a request that waits 50 ms on the database**, every stack is limited
-  by the 20-connection pool (270–306 req/s).
-
-Behind a real server on Linux (uvicorn or gunicorn, driven by wrk on a
-4-vCPU GitHub runner), the ADRF and Django comparisons hold (8.6 times ADRF's
-reads, 28-35% more than Django's async views). Synchronous DRF under gunicorn
-serves 10-22% more requests on these CPU-bound endpoints, since its threads
-use slightly more than the one core an event loop gets, but needs 107 threads
-at 100 clients against 5, and its 99th-percentile latency was 4 to 5 times
-higher.
+  by the 20-connection pool (about 390 req/s).
+- **Every stack fit in 2 GB** with room to spare (at most 259 MB), and the
+  asyncdjango stacks ran on 6 threads where synchronous DRF used up to 112
+  and ADRF 200.
 
 Results vary between runs and machines. See
 [docs/benchmarks.md](docs/benchmarks.md) for the method, all results with

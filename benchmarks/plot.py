@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -68,6 +69,12 @@ def line_style(stack: str) -> object:
 def marker(stack: str) -> str:
     return "s" if stack in DOTTED else "o"
 
+
+def label(stack: str) -> str:
+    # Long labels wrap so they do not squeeze the panels.
+    text = STACKS[stack].label
+    return text.replace(", ", ",\n") if len(text) > 30 else text
+
 METRICS = {
     "throughput": ("rps", "Requests per second (higher is better)", "{:,.0f}"),
     "latency": ("p99_ms", "99th percentile latency, ms (lower is better)", "{:,.0f}"),
@@ -100,7 +107,9 @@ def footer(fig, data: dict, machine: str | None) -> str:
     repeat = data.get("repeat", 1)
     if environment.get("mode") == "server":
         harness = (f"uvicorn / gunicorn, {environment.get('workers', 1)} worker(s) on"
-                   f" {len(environment['server_cpus'].split(','))} vCPU, wrk")
+                   f" {len(environment['server_cpus'].split(','))} vCPU"
+                   + (f" and {environment['memory_limit']}B memory"
+                      if environment.get("memory_limit") else "") + ", wrk")
     else:
         harness = "in-process, no HTTP server"
     text = (f"{machine or environment['processor']} · {environment['platform'].split('-')[0]}"
@@ -109,7 +118,8 @@ def footer(fig, data: dict, machine: str | None) -> str:
             f" · ADRF {packages['adrf']} · {data['pool_size']}-connection pool for every stack"
             + (f" · median of {repeat} rounds" if repeat > 1 else "") +
             f" · {harness} · {environment['date']}")
-    fig.text(0.01, 0.015, text, fontsize=7.5, color=plt.rcParams["axes.labelcolor"])
+    fig.text(0.01, 0.012, textwrap.fill(text, 200), fontsize=7.5,
+             color=plt.rcParams["axes.labelcolor"])
     return text
 
 
@@ -137,12 +147,12 @@ def bars(data: dict, metric: str, concurrency: int, theme: dict, meta: dict) -> 
         ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(
             lambda value, _: f"{value:,.0f}"))
     axes[0][0].set_yticks([POSITIONS[s] for s in order])
-    axes[0][0].set_yticklabels([STACKS[s].label for s in order])
+    axes[0][0].set_yticklabels([label(s) for s in order])
     axes[0][0].invert_yaxis()
     fig.suptitle(f"{title}, {concurrency} concurrent clients", x=0.01, ha="left",
                  fontsize=12, fontweight="bold", color=theme["text"])
     footer(fig, data, meta["machine"])
-    fig.tight_layout(rect=(0, 0.04, 1, 0.97))
+    fig.tight_layout(rect=(0, 0.06, 1, 0.97))
     return fig
 
 
@@ -179,7 +189,7 @@ def scaling(data: dict, theme: dict, meta: dict) -> plt.Figure:
     axes[0][0].set_ylabel("requests per second")
     present = [s for s in ORDER if any(r["stack"] == s for r in data["results"])]
     handles = [Line2D([], [], color=theme["series"][s], linewidth=2, marker=marker(s),
-                      markersize=5, linestyle=line_style(s), label=STACKS[s].label)
+                      markersize=5, linestyle=line_style(s), label=label(s))
                for s in present]
     fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 0.95),
                ncols=3, frameon=False, fontsize=9, handlelength=2.6,
@@ -190,7 +200,7 @@ def scaling(data: dict, theme: dict, meta: dict) -> plt.Figure:
     fig.suptitle(title, x=0.01, ha="left",
                  fontsize=12, fontweight="bold", color=theme["text"])
     footer(fig, data, meta["machine"])
-    fig.tight_layout(rect=(0, 0.04, 1, 0.88))
+    fig.tight_layout(rect=(0, 0.06, 1, 0.86))
     return fig
 
 

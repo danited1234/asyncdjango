@@ -84,14 +84,22 @@ job per scenario; PostgreSQL on vCPU 3, the server on 0-1, wrk on 2) and
 publishes every round as an annotation on the job. Results use the same file
 format as `run.py`, so `benchmarks/plot.py` charts them.
 
-## Results
+## Latest results: a 2-vCPU, 2 GB server (Linux)
 
-Measured on 2026-10-27: Windows 10, Intel Core i5-8350U (4 cores, 8 threads,
-1.7 GHz), 16 GB RAM, Python 3.13.12, Django 6.0.3, DRF 3.16.1, adrf 0.1.12,
-psycopg 3.3.2, psycopg-pool 3.3.3, PostgreSQL 18.6 on the same machine.
-`python -m benchmarks.run --repeat 3`: 8 s per case after a 2 s warm-up, a
-20-connection pool, and the median of three rounds. The raw rounds are in
-[`benchmarks/results/latest.json`](../benchmarks/results/latest.json).
+Measured on 2026-10-29 by the `server benchmark` workflow, `2-cpu-2gb`
+profile: the shape of a small VPS whose database is a separate host. Every
+stack serves over real HTTP (uvicorn, or gunicorn for synchronous DRF) with
+two workers on two vCPUs, in a 2 GB cgroup without swap, driven by wrk on its
+own vCPU; PostgreSQL 18 runs on the fourth. Python 3.13, Django 6.0.9, DRF
+3.16.1, adrf 0.1.12, psycopg 3.3.6, a 20-connection pool in total for every
+stack, the median of three rounds. Each scenario ran on its own runner (AMD
+EPYC 9V45 for read and the I/O-bound query, EPYC 7763 for write), so compare
+stacks within a panel. Every round is in
+[`benchmarks/results/server-2cpu-2gb-2026-10-29.json`](../benchmarks/results/server-2cpu-2gb-2026-10-29.json),
+and the one-core jobs of the same run in
+[`server-1cpu-2026-10-29.json`](../benchmarks/results/server-1cpu-2026-10-29.json).
+No request failed. The charts are drawn with
+`python -m benchmarks.plot benchmarks/results/server-2cpu-2gb-2026-10-29.json`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/bench-throughput-dark.svg">
@@ -112,6 +120,34 @@ psycopg 3.3.2, psycopg-pool 3.3.3, PostgreSQL 18.6 on the same machine.
   <source media="(prefers-color-scheme: dark)" srcset="images/bench-scaling-dark.svg">
   <img alt="Requests per second from 10 to 100 concurrent clients, with the range of the three rounds" src="images/bench-scaling-light.svg">
 </picture>
+
+At 50 clients:
+
+- **Plain Django views on asyncdjango** serve the most: 21% more reads and
+  6% more writes than synchronous DRF, and 21% and 24% more than Django's own
+  async views, at the lowest CPU per request on both.
+- **asyncdjango.rest_framework** serves 0.89 times synchronous DRF's reads
+  and 0.78 times its writes, and with `CONNECTION_PER_REQUEST` 0.95 and 0.87
+  times. With `CONNECTION_PER_REQUEST` and the server on one core (the `1-cpu`
+  jobs) it reaches 0.99–1.05 times DRF's reads and 0.93–0.95 times its
+  writes. Against ADRF it serves
+  6.9 times the reads and 1.9 times the writes.
+- **The 50 ms query** is capped by the pool (20 connections × 50 ms = 400
+  req/s) for every stack.
+
+The DRF numbers were 0.69–0.85 times synchronous DRF before this round of work.
+Model serializers now build their fields once per class, serialization plans
+each field's lookup once per serializer (about twice as fast as DRF's on
+loaded rows), and a native ORM call costs less to start.
+
+## Results in-process (Windows laptop)
+
+Measured on 2026-10-27: Windows 10, Intel Core i5-8350U (4 cores, 8 threads,
+1.7 GHz), 16 GB RAM, Python 3.13.12, Django 6.0.3, DRF 3.16.1, adrf 0.1.12,
+psycopg 3.3.2, psycopg-pool 3.3.3, PostgreSQL 18.6 on the same machine.
+`python -m benchmarks.run --repeat 3`: 8 s per case after a 2 s warm-up, a
+20-connection pool, and the median of three rounds. The raw rounds are in
+[`benchmarks/results/latest.json`](../benchmarks/results/latest.json).
 
 ### Reading the numbers
 
