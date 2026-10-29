@@ -779,6 +779,7 @@ ASYNCDJANGO = {
     "NATIVE_BUILTIN_MIDDLEWARE": True, # run Django's non-blocking built-in middleware natively
     "STALL_THRESHOLD": None,           # seconds; log every event-loop stall at least this long
     "SESSION_SQL": None,               # function(connection) -> SQL for per-request session state
+    "CONNECTION_PER_REQUEST": False,   # one pooled connection for all ORM calls of a request
 }
 ```
 

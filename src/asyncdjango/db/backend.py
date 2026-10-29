@@ -26,7 +26,7 @@ from psycopg.client_cursor import ClientCursorMixin
 from psycopg.pq import Format
 
 from . import pool as pool_registry
-from .bridge import await_, in_native_context
+from .bridge import await_, await_now, in_native_context
 
 
 class AsyncServerSideCursor(ClientCursorMixin, psycopg.AsyncServerCursor):
@@ -53,13 +53,13 @@ class GreenletCursor:
         await_(self._cursor.executemany(query, params_seq, **kwargs))
 
     def fetchone(self) -> Any:
-        return await_(self._cursor.fetchone())
+        return await_now(self._cursor.fetchone())
 
     def fetchmany(self, size: int = 0) -> list[Any]:
-        return await_(self._cursor.fetchmany(size))
+        return await_now(self._cursor.fetchmany(size))
 
     def fetchall(self) -> list[Any]:
-        return await_(self._cursor.fetchall())
+        return await_now(self._cursor.fetchall())
 
     def scroll(self, value: int, mode: str = "relative") -> None:
         await_(self._cursor.scroll(value, mode))
@@ -72,7 +72,7 @@ class GreenletCursor:
             # client-side cursor holds no server state; a named cursor is
             # closed when its connection is returned to the pool.
             return
-        await_(self._cursor.close())
+        await_now(self._cursor.close())
 
     def callproc(self, name: Any, args: Any = None) -> Any:
         # Same SQL as Django's psycopg CursorMixin.callproc().
@@ -194,7 +194,10 @@ class GreenletConnection:
 
     @autocommit.setter
     def autocommit(self, value: bool) -> None:
-        await_(self._aconn.set_autocommit(value))
+        # connect() sets it on every checkout; pooled connections are already
+        # in autocommit, and psycopg takes its lock even for no change.
+        if value != self._aconn.autocommit:
+            await_(self._aconn.set_autocommit(value))
 
     @property
     def isolation_level(self) -> Any:
@@ -238,6 +241,11 @@ class NativeWrapperMixin:
         pass
 
     def get_connection_params(self) -> dict[str, Any]:
+        # connect() passes these to get_new_connection(), which takes a pooled
+        # connection instead; the pool is built from pool_connection_params().
+        return {}
+
+    def pool_connection_params(self) -> dict[str, Any]:
         params = super().get_connection_params()
         server_side_binding = self.settings_dict["OPTIONS"].get("server_side_binding")
         params["cursor_factory"] = (

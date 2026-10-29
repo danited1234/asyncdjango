@@ -108,7 +108,7 @@ def _template_wrapper(alias: str) -> Any:
 def _make_pool(alias: str) -> AsyncConnectionPool:
     wrapper = _template_wrapper(alias)
     options = wrapper.settings_dict["OPTIONS"]
-    kwargs = wrapper.get_connection_params()
+    kwargs = wrapper.pool_connection_params()
     timezone_name = wrapper.timezone_name
     set_time_zone_sql = wrapper.ops.set_time_zone_sql()
     role = options.get("assume_role")

@@ -11,6 +11,7 @@ on:
         default: "3"
   push:
     paths:
+      - "src/asyncdjango/**"
       - "benchmarks/server.py"
       - "benchmarks/wrk.lua"
       - ".github/workflows/server-benchmark.yml"
@@ -104,6 +105,10 @@ jobs:
               title = (f"server-bench ${{ matrix.scenario }} ${{ matrix.machine }}"
                        f" ({env['cpu_model']} with {env['cpu_count']} CPUs)")
               print(f"::notice title={title}::" + "%0A".join(lines))
+              # The environment too, so the charts can be drawn from annotations.
+              meta = {key: data[key] for key in ("environment", "pool_size", "repeat", "duration")}
+              print(f"::notice title=server-bench-env ${{ matrix.scenario }} ${{ matrix.machine }}::"
+                    + json.dumps(meta).replace("%", "%25"))
           EOF
 
       - uses: actions/upload-artifact@v4

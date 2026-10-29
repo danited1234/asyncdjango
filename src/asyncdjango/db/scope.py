@@ -27,7 +27,7 @@ from asgiref.sync import AsyncToSync
 from .. import conf
 from .._threads import run_in_caller_thread
 from ..exceptions import CrossTaskConnectionError
-from .bridge import greenlet_spawn, in_native_context
+from .bridge import finish, greenlet_spawn, in_native_context
 from .pool import is_native_alias
 
 T = TypeVar("T")
@@ -70,6 +70,12 @@ class NativeScope:
             frame = frame.f_back
         return False
 
+    @property
+    def in_transaction(self) -> bool:
+        """A transactional scope, or one whose connection is in an atomic block."""
+        return self.transactional or any(
+            wrapper.in_atomic_block for wrapper in self.wrappers.values())
+
     def owned_by_current_task(self) -> bool:
         return self.shared or asyncio.current_task() is self.owner
 
@@ -110,6 +116,19 @@ class NativeScope:
         if errors:
             raise errors[0]
 
+    async def aclose_uncancelled(self) -> None:
+        """``aclose()`` that a cancellation of the caller cannot interrupt."""
+        if not self.wrappers:
+            self.closed = True
+            return
+        # Returning connections rarely waits; shield (a new task) only if it does.
+        iterator = self.aclose().__await__()
+        try:
+            waiting_on = iterator.send(None)
+        except StopIteration:
+            return
+        await asyncio.shield(finish(iterator, waiting_on))
+
 
 def active_scope() -> NativeScope | None:
     """The scope the current task should use, or None for a new one.
@@ -127,7 +146,7 @@ def active_scope() -> NativeScope | None:
         return None
     if scope.owned_by_current_task():
         return scope
-    if scope.transactional:
+    if scope.in_transaction:
         scope.check_owner()
     return None
 
@@ -181,7 +200,7 @@ async def run_native(fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
     try:
         return await run_in_scope(scope, fn, *args, **kwargs)
     finally:
-        await asyncio.shield(scope.aclose())
+        await scope.aclose_uncancelled()
 
 
 def sync_to_native(fn: Callable[..., T]) -> Callable[..., Any]:

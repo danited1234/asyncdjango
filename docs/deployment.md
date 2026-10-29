@@ -65,6 +65,26 @@ Celery workers keep Django's one connection per worker thread: async
 services they call through `async_to_sync` use it rather than a pool (see
 the [guide](guide.md#celery-tasks-and-other-synchronous-callers)).
 
+### One connection per request
+
+By default every awaited ORM call checks a connection out of the pool and
+returns it right away, so a request that spends most of its time awaiting
+other services holds no connection meanwhile. With
+
+```python
+ASYNCDJANGO = {"CONNECTION_PER_REQUEST": True}
+```
+
+the ORM calls of a request share one connection, checked out by the first
+and returned when the response is ready, as a thread's connection is in sync
+Django. Each call then skips the checkout and the setup of its own Django
+connection object, which saves CPU on endpoints that make several queries,
+and `SESSION_SQL` runs at most once per request. The price is that a request
+holds its connection while it awaits anything else (an HTTP API, S3), so size
+the pool for the requests in flight rather than for the queries in flight.
+Child tasks (`asyncdjango.gather()`, `asyncio.create_task()`) still get
+connections of their own, and a transaction still refuses them.
+
 When the pool is exhausted, requests wait up to `timeout` seconds and then
 fail with `OperationalError`. That is back-pressure, not a leak. Watch
 `asyncdjango.db.pool_stats()` (from inside the event loop) to tune it.

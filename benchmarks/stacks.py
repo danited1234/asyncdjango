@@ -10,11 +10,14 @@ class Stack:
     urlconf: str
     interface: str  # "asgi" or "wsgi"
     native: bool  # asyncdjango installed
+    connection_per_request: bool = False  # ASYNCDJANGO["CONNECTION_PER_REQUEST"]
 
 
 STACKS = {stack.key: stack for stack in [
     Stack("asyncdjango-drf", "asyncdjango.rest_framework", "benchmarks.views_async_drf",
           "asgi", True),
+    Stack("asyncdjango-drf-req", "asyncdjango.rest_framework, connection per request",
+          "benchmarks.views_async_drf", "asgi", True, connection_per_request=True),
     Stack("adrf", "ADRF", "benchmarks.views_async_drf", "asgi", False),
     Stack("drf", "DRF (sync, WSGI)", "benchmarks.views_drf", "wsgi", False),
     Stack("asyncdjango", "asyncdjango + Django views", "benchmarks.views_django",

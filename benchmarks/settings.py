@@ -38,7 +38,8 @@ INSTALLED_APPS = [
 ]
 if STACK.native:
     INSTALLED_APPS.append("asyncdjango")
-    ASYNCDJANGO = {"POOL": {"min_size": 4, "max_size": POOL_SIZE}}
+    ASYNCDJANGO = {"POOL": {"min_size": 4, "max_size": POOL_SIZE},
+                   "CONNECTION_PER_REQUEST": STACK.connection_per_request}
 else:
     # Every stack gets a pool of the same size. For Django this is its
     # built-in psycopg pool (Django 5.1+), the recommended setup under ASGI.

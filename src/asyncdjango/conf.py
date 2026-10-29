@@ -29,6 +29,11 @@ DEFAULTS: dict[str, Any] = {
     # Also treat Django's built-in middleware that does no blocking I/O as
     # native (see asyncdjango.middleware).
     "NATIVE_BUILTIN_MIDDLEWARE": True,
+    # Give every ORM call in a request one pooled connection, held until the
+    # response is ready (as a thread's connection in sync Django), instead of
+    # a connection per call. Less overhead per call; the request keeps its
+    # connection while it awaits anything else (asyncdjango.asgi).
+    "CONNECTION_PER_REQUEST": False,
     # Log a warning with a stack trace whenever the event loop is blocked for
     # this many seconds (asyncdjango.monitoring). None: off.
     "STALL_THRESHOLD": None,
