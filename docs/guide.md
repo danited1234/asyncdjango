@@ -216,6 +216,28 @@ A `GenericRelation` manager looks up its `ContentType`. `NativeASGIHandler`
 fills Django's content-type cache at startup. In scripts, call
 `await asyncdjango.asgi.warm_content_types()` once first.
 
+### Per-request session state
+
+Session state such as a tenant's `search_path` stays on a pooled connection
+after the request that set it. Name a function that returns the SQL each query
+needs, and asyncdjango runs it only when the connection's state differs:
+
+```python
+# settings.py
+ASYNCDJANGO = {"SESSION_SQL": "tenancy.db.session_sql"}
+
+# tenancy/db.py
+def session_sql(connection):
+    schema = connection.ops.quote_name(current_tenant_schema())  # a ContextVar
+    return f"SET search_path TO {schema}, public"
+```
+
+It is called before every query (keep it cheap) and may return None. The SQL
+is remembered per physical connection. A `SET` sent inside a transaction is
+trusted for the rest of it, kept on commit, and sent again after a rollback or
+a rollback to a savepoint, which undo it. Synchronous connections (Celery,
+management commands) use the same function.
+
 ## 4. Transactions
 
 ```python
@@ -669,6 +691,7 @@ ASYNCDJANGO = {
     "POOLS": {},                       # per-alias overrides, e.g. {"replica": {"max_size": 4}}
     "NATIVE_SYNC_MIDDLEWARE": [],      # extra middleware classes to run natively
     "NATIVE_BUILTIN_MIDDLEWARE": True, # run Django's non-blocking built-in middleware natively
+    "SESSION_SQL": None,               # function(connection) -> SQL for per-request session state
 }
 ```
 

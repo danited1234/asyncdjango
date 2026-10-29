@@ -29,6 +29,10 @@ DEFAULTS: dict[str, Any] = {
     # Also treat Django's built-in middleware that does no blocking I/O as
     # native (see asyncdjango.middleware).
     "NATIVE_BUILTIN_MIDDLEWARE": True,
+    # Dotted path to a function(connection) returning SQL that sets the
+    # session state a query needs (search_path for a tenant), or None. Run
+    # only when the pooled connection's state differs (asyncdjango.db.session).
+    "SESSION_SQL": None,
 }
 
 

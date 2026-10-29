@@ -6,15 +6,18 @@ class AsyncDjangoConfig(AppConfig):
     verbose_name = "Native async Django"
 
     def ready(self) -> None:
+        from django.db.backends.signals import connection_created
+
         from . import (
             checks,  # noqa: F401  (registers system checks)
             conf,
             middleware,
             signals,
         )
-        from .db import patch, scope
+        from .db import patch, scope, session
 
         scope.install_connection_hook()
+        connection_created.connect(session.install)
         signals.install()
         signals.install_async_to_sync()
         middleware.install()

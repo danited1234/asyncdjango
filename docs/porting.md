@@ -160,12 +160,11 @@ middleware still run in Django's per-request thread. Options:
 - Size the pool: `workers × POOL.max_size` plus Celery and management commands
   must stay under PostgreSQL's `max_connections`, or under PgBouncer's pool.
 - Tenancy via `search_path`: an execute wrapper installed from
-  `connection_created` keeps working. It runs on every pool checkout, so
-  outside a transaction each awaited ORM call may re-issue `SET search_path`.
-  Inside `async with transaction.atomic()` it is set once. To skip the
-  repeated `SET`, remember the applied schema per pooled connection, keyed by
-  `connection.connection.async_connection` (the same psycopg connection on
-  every checkout; a fresh wrapper and facade are created per call).
+  `connection_created` keeps working, but each awaited ORM call checks out a
+  pooled connection that may have served another tenant, so it must re-issue
+  `SET search_path` whenever it is unsure. Replace it with
+  `ASYNCDJANGO["SESSION_SQL"]` ([guide.md](guide.md#per-request-session-state)),
+  which tracks the state per physical connection and through transactions.
 
 ## 7. Tests
 
