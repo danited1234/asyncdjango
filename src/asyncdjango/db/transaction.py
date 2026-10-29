@@ -98,7 +98,7 @@ class Atomic(django_transaction.Atomic):
             self._async_entries.remove(entry)
             if token is not None:
                 _reset(_current_scope, token)
-                await asyncio.shield(scope.aclose())
+                await scope.aclose_uncancelled()
             raise
 
     async def __aexit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
@@ -119,7 +119,7 @@ class Atomic(django_transaction.Atomic):
         finally:
             if token is not None:
                 _reset(_current_scope, token)
-                await asyncio.shield(scope.aclose())
+                await scope.aclose_uncancelled()
 
     async def _abandoned_exit(self, token: Any, scope: NativeScope) -> None:
         # Reached when an async generator holding this block is finalized by
@@ -130,7 +130,7 @@ class Atomic(django_transaction.Atomic):
             "generator?); rolling it back. Close generators with contextlib.aclosing()."
         )
         if token is not None:
-            await asyncio.shield(scope.aclose())  # pool rolls back the transaction
+            await scope.aclose_uncancelled()  # pool rolls back the transaction
             return
         using = DEFAULT_DB_ALIAS if self.using is None else self.using
         wrapper = scope.wrappers.get(using)

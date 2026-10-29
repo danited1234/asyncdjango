@@ -18,7 +18,6 @@ which runs on that caller's thread; see ``scope.in_sync_caller_loop()``.
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import warnings
 from collections.abc import Callable
@@ -233,7 +232,7 @@ def _native_aiterator(original: Callable[..., Any]) -> Callable[..., Any]:
                         _current_scope.reset(token)
                     except ValueError:
                         pass  # finalized elsewhere; the closed scope is ignored
-                    await asyncio.shield(scope.aclose())
+                    await scope.aclose_uncancelled()
 
     aiterator.__asyncdjango_native__ = True
     return aiterator

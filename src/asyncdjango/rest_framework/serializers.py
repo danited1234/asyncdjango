@@ -17,9 +17,13 @@ from Django REST framework 3.16 (BSD-3-Clause); see docs/upstream.md.
 
 from __future__ import annotations
 
+import copy
+from collections.abc import Callable, Mapping
 from typing import Any
 
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
+from rest_framework import fields as drf_fields
 from rest_framework import serializers as drf
 from rest_framework.fields import SkipField
 from rest_framework.relations import PKOnlyObject
@@ -29,6 +33,7 @@ from rest_framework.serializers import (  # noqa: F401  (re-exported like DRF's 
     LIST_SERIALIZER_KWARGS_REMOVE,
     ValidationError,
 )
+from rest_framework.settings import api_settings
 from rest_framework.utils.serializer_helpers import ReturnDict, ReturnList
 
 from ..db.scope import run_native
@@ -54,6 +59,30 @@ def _represent(field: Any, value: Any) -> Any:
     if custom is not None:
         return resolve(custom(value))
     return resolve(field.to_representation(value))
+
+
+def _representer(field: Any) -> Callable[[Any], Any]:
+    """``_represent`` for one field, without checks that cannot change per value."""
+    custom = _custom_async_representation(field)
+    if custom is not None:
+        return lambda value: resolve(custom(value))
+    owner = _owner(type(field), "to_representation")
+    if owner.__module__.startswith("rest_framework.") or owner in (Serializer, ListSerializer):
+        # DRF's fields and these serializers never return an awaitable.
+        return field.to_representation
+    return lambda value: resolve(field.to_representation(value))
+
+
+def _plain_attribute(field: Any) -> str | None:
+    """The attribute name when DRF's lookup amounts to one ``getattr()``."""
+    if (_owner(type(field), "get_attribute") is drf_fields.Field
+            and len(field.source_attrs) == 1):
+        return field.source_attrs[0]
+    return None
+
+
+def _owner(cls: type, name: str) -> type:
+    return next(klass for klass in cls.__mro__ if name in vars(klass))
 
 
 class BaseSerializer(drf.BaseSerializer):
@@ -141,17 +170,44 @@ class Serializer(BaseSerializer, drf.Serializer):
         return ReturnDict(await self._raw_adata(), serializer=self)
 
     def to_representation(self, instance: Any) -> Any:
+        fields = self.fields
+        plan = self.__dict__.get("_representation_plan")
+        if plan is None or plan[0] is not fields or plan[1] != len(fields):
+            plan = self._representation_plan = (fields, len(fields), [
+                (field.field_name, field, _plain_attribute(field), _representer(field))
+                for field in self._readable_fields
+            ])
+        mapping = isinstance(instance, Mapping)
         ret = {}
-        for field in self._readable_fields:
-            try:
-                attribute = field.get_attribute(instance)
-            except SkipField:
-                continue
-            check_for_none = attribute.pk if isinstance(attribute, PKOnlyObject) else attribute
-            if check_for_none is None:
-                ret[field.field_name] = None
+        for name, field, attr, represent in plan[2]:
+            if attr is None or mapping:
+                try:
+                    attribute = field.get_attribute(instance)
+                except SkipField:
+                    continue
+                if isinstance(attribute, PKOnlyObject):
+                    if attribute.pk is None:
+                        ret[name] = None
+                        continue
             else:
-                ret[field.field_name] = _represent(field, attribute)
+                # DRF's Field.get_attribute() for a one-attribute source; any
+                # unusual case (an error, a callable) takes DRF's own path.
+                try:
+                    attribute = getattr(instance, attr)
+                except ObjectDoesNotExist:
+                    attribute = None
+                except (KeyError, AttributeError):
+                    try:
+                        attribute = field.get_attribute(instance)
+                    except SkipField:
+                        continue
+                else:
+                    if callable(attribute):
+                        try:
+                            attribute = field.get_attribute(instance)
+                        except SkipField:
+                            continue
+            ret[name] = None if attribute is None else represent(attribute)
         return ret
 
 
@@ -161,7 +217,8 @@ class ListSerializer(BaseSerializer, drf.ListSerializer):
 
     def to_representation(self, data: Any) -> Any:
         iterable = data.all() if isinstance(data, models.manager.BaseManager) else data
-        return [_represent(self.child, item) for item in iterable]
+        represent = _representer(self.child)
+        return [represent(item) for item in iterable]
 
     async def asave(self, **kwargs: Any) -> Any:
         assert "commit" not in kwargs, (
@@ -180,11 +237,51 @@ class ListSerializer(BaseSerializer, drf.ListSerializer):
         return [await self.child.acreate(attrs) for attrs in validated_data]
 
 
-class ModelSerializer(Serializer, drf.ModelSerializer):
+# The methods DRF's ModelSerializer.get_fields() builds fields with. When a
+# class overrides none of them its fields depend only on the class.
+_FIELD_HOOKS = (
+    "get_fields", "get_field_names", "get_default_field_names", "get_extra_kwargs",
+    "include_extra_kwargs", "get_uniqueness_extra_kwargs", "get_unique_together_constraints",
+    "_get_model_fields", "build_field", "build_standard_field", "build_relational_field",
+    "build_nested_field", "build_property_field", "build_url_field", "build_unknown_field",
+)
+_built_fields: dict[type, Any] = {}
+
+
+class _BuildFieldsOnce:
+    """Build a model serializer's fields once per class, then copy them.
+
+    DRF rebuilds them from the model's metadata for every serializer instance,
+    which is most of a small serializer's cost. Each instance still gets its
+    own copies, as DRF does for declared fields. Classes that override any of
+    the field-building methods keep DRF's behavior.
+    """
+
+    def get_fields(self) -> Any:
+        cls = type(self)
+        built = _built_fields.get(cls)
+        if built is None:
+            if not all(_hook_owner(cls, name).__module__.startswith("rest_framework.")
+                       or _hook_owner(cls, name) is _BuildFieldsOnce for name in _FIELD_HOOKS):
+                _built_fields[cls] = False
+                return super().get_fields()
+            built = _built_fields[cls] = super().get_fields()
+        elif built is False:
+            return super().get_fields()
+        if self.url_field_name is None:
+            self.url_field_name = api_settings.URL_FIELD_NAME
+        return copy.deepcopy(built)
+
+
+def _hook_owner(cls: type, name: str) -> type:
+    return next(klass for klass in cls.__mro__ if name in vars(klass))
+
+
+class ModelSerializer(_BuildFieldsOnce, Serializer, drf.ModelSerializer):
     """DRF ``ModelSerializer``; default ``acreate``/``aupdate`` run ``create``/``update``."""
 
 
-class HyperlinkedModelSerializer(Serializer, drf.HyperlinkedModelSerializer):
+class HyperlinkedModelSerializer(_BuildFieldsOnce, Serializer, drf.HyperlinkedModelSerializer):
     pass
 
 

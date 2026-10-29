@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextvars
 import sys
+import types
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
@@ -50,6 +51,50 @@ def await_(awaitable: Awaitable[T]) -> T:
             "ORM-only synchronous code in `await asyncdjango.sync_to_native(fn)()`."
         )
     return current.driver.switch(awaitable)
+
+
+def await_now(awaitable: Awaitable[T]) -> T:
+    """``await_()`` for awaitables that usually finish without waiting.
+
+    They are started in the greenlet, and only switch to the event loop if
+    they do wait: fetching rows a client-side cursor already received, or
+    closing it. Not for code that sets context variables: its first part runs
+    in the greenlet's context and the rest in the task's.
+    """
+    if not isinstance(greenlet.getcurrent(), _NativeGreenlet):
+        return await_(awaitable)
+    iterator = awaitable.__await__()
+    try:
+        waiting_on = iterator.send(None)
+    except StopIteration as stop:
+        return stop.value
+    return await_(_resume(iterator, waiting_on))
+
+
+async def finish(iterator: Any, waiting_on: Any) -> Any:
+    """Finish, as a coroutine, an awaitable already waiting on ``waiting_on``."""
+    return await _resume(iterator, waiting_on)
+
+
+@types.coroutine
+def _resume(iterator: Any, waiting_on: Any) -> Any:
+    """Finish an awaitable that is already waiting on ``waiting_on``."""
+    while True:
+        try:
+            value = yield waiting_on
+        except GeneratorExit:
+            iterator.close()
+            raise
+        except BaseException as exc:
+            try:
+                waiting_on = iterator.throw(exc)
+            except StopIteration as stop:
+                return stop.value
+        else:
+            try:
+                waiting_on = iterator.send(value)
+            except StopIteration as stop:
+                return stop.value
 
 
 _MISSING = object()

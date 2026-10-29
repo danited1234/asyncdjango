@@ -11,6 +11,7 @@ on:
         default: "3"
   push:
     paths:
+      - "src/asyncdjango/**"
       - "benchmarks/server.py"
       - "benchmarks/wrk.lua"
       - ".github/workflows/server-benchmark.yml"
