@@ -66,19 +66,33 @@ def _representer(field: Any) -> Callable[[Any], Any]:
     custom = _custom_async_representation(field)
     if custom is not None:
         return lambda value: resolve(custom(value))
-    owner = _owner(type(field), "to_representation")
-    if owner.__module__.startswith("rest_framework.") or owner in (Serializer, ListSerializer):
-        # DRF's fields and these serializers never return an awaitable.
+    if _field_kind(type(field))[1]:
         return field.to_representation
     return lambda value: resolve(field.to_representation(value))
 
 
 def _plain_attribute(field: Any) -> str | None:
     """The attribute name when DRF's lookup amounts to one ``getattr()``."""
-    if (_owner(type(field), "get_attribute") is drf_fields.Field
-            and len(field.source_attrs) == 1):
+    if _field_kind(type(field))[0] and len(field.source_attrs) == 1:
         return field.source_attrs[0]
     return None
+
+
+_field_kinds: dict[type, tuple[bool, bool]] = {}
+
+
+def _field_kind(cls: type) -> tuple[bool, bool]:
+    """(uses DRF's own get_attribute, to_representation never returns an awaitable)."""
+    kind = _field_kinds.get(cls)
+    if kind is None:
+        represent = _owner(cls, "to_representation")
+        kind = _field_kinds[cls] = (
+            _owner(cls, "get_attribute") is drf_fields.Field,
+            # DRF's fields and these serializers never return an awaitable.
+            represent.__module__.startswith("rest_framework.")
+            or represent in (Serializer, ListSerializer),
+        )
+    return kind
 
 
 def _owner(cls: type, name: str) -> type:
