@@ -2,14 +2,16 @@
 
     python -m benchmarks.server [--concurrency 25 50 100] [--duration 10] [--repeat 3]
                                 [--stacks ...] [--scenarios ...] [--output FILE]
-                                [--server-cpus 0,1] [--client-cpus 2,3]
+                                [--server-cpus 0,1] [--client-cpus 2,3] [--workers 1]
 
 Unlike benchmarks/run.py, which calls each application in-process, this starts
-the stack in its production shape (one uvicorn worker with uvloop and
-httptools for ASGI stacks; one gunicorn gthread worker with `concurrency`
-threads for the WSGI stack) and measures it over loopback HTTP with wrk. The
-server and wrk are pinned to separate CPUs with taskset; run PostgreSQL on
-others (benchmarks/docker/compose.yaml does this).
+the stack in its production shape (uvicorn workers with uvloop and httptools
+for ASGI stacks; gunicorn gthread workers with `concurrency` threads in total
+for the WSGI stack; one worker unless --workers says otherwise) and measures
+it over loopback HTTP with wrk. The server and wrk are pinned to separate CPUs
+with taskset; run PostgreSQL on others (benchmarks/docker/compose.yaml does
+this). With several workers each gets an equal share of the BENCH_POOL
+connections.
 
 Results use run.py's format, so benchmarks/plot.py charts them.
 """
@@ -40,15 +42,25 @@ from benchmarks.worker import SCENARIOS, fingerprint_part, fingerprint_requests
 PORT = 8765
 
 
-def server_command(stack: str, concurrency: int) -> list[str]:
+def cpu_model() -> str:
+    # GitHub runners of one workflow run can differ; record which this was.
+    for line in Path("/proc/cpuinfo").read_text().splitlines():
+        if line.startswith("model name"):
+            return line.partition(":")[2].strip()
+    return "unknown"
+
+
+def server_command(stack: str, concurrency: int, workers: int) -> list[str]:
     address = f"127.0.0.1:{PORT}"
     if STACKS[stack].interface == "wsgi":
+        # One thread per client connection in total.
+        threads = -(-concurrency // workers)
         return ["gunicorn", "benchmarks.wsgi:application", "--worker-class", "gthread",
-                "--workers", "1", "--threads", str(concurrency), "--bind", address,
+                "--workers", str(workers), "--threads", str(threads), "--bind", address,
                 "--log-level", "warning"]
     return ["uvicorn", "benchmarks.asgi:application", "--host", "127.0.0.1",
-            "--port", str(PORT), "--workers", "1", "--loop", "uvloop", "--http", "httptools",
-            "--no-access-log", "--log-level", "warning"]
+            "--port", str(PORT), "--workers", str(workers), "--loop", "uvloop",
+            "--http", "httptools", "--no-access-log", "--log-level", "warning"]
 
 
 def request(method: str, path: str, body: bytes = b"") -> tuple[int, bytes]:
@@ -102,7 +114,7 @@ def cpu_seconds(pid: int) -> float:
 
 
 class Sampler(threading.Thread):
-    """Peak threads of the server's processes and peak database connections."""
+    """Peak threads and memory of the server's processes, and peak database connections."""
 
     def __init__(self, pid: int) -> None:
         super().__init__(daemon=True)
@@ -116,15 +128,19 @@ class Sampler(threading.Thread):
                                           autocommit=True)
         self.stopping = threading.Event()
         self.threads = 0
+        self.rss = 0
         self.connections = 0
 
     def run(self) -> None:
         while not self.stopping.is_set():
             try:
-                threads = sum(process.num_threads() for process in process_tree(self.pid))
+                processes = process_tree(self.pid)
+                threads = sum(process.num_threads() for process in processes)
+                rss = sum(process.memory_info().rss for process in processes)
             except psutil.NoSuchProcess:
-                threads = 0
+                threads = rss = 0
             self.threads = max(self.threads, threads)
+            self.rss = max(self.rss, rss)
             count = self.connection.execute(
                 "SELECT count(*) FROM pg_stat_activity WHERE datname = %s",
                 [self.database]).fetchone()[0]
@@ -152,10 +168,13 @@ def wrk(scenario: str, concurrency: int, duration: float, cpus: str) -> dict:
 
 
 def run_case(stack: str, scenario: str, concurrency: int, duration: float, warmup: float,
-             server_cpus: str, client_cpus: str) -> dict:
-    env = {**os.environ, "BENCH_STACK": stack, "PYTHONPATH": os.getcwd()}
+             server_cpus: str, client_cpus: str, workers: int) -> dict:
+    # Split the pool between the workers: the same database connections in total.
+    pool = int(os.environ.get("BENCH_POOL", 20))
+    env = {**os.environ, "BENCH_STACK": stack, "PYTHONPATH": os.getcwd(),
+           "BENCH_POOL": str(max(1, pool // workers))}
     process = subprocess.Popen(["taskset", "-c", server_cpus,
-                                *server_command(stack, concurrency)], env=env)
+                                *server_command(stack, concurrency, workers)], env=env)
     try:
         wait_ready(process)
         digest = fingerprint(scenario)
@@ -185,7 +204,8 @@ def run_case(stack: str, scenario: str, concurrency: int, duration: float, warmu
         "p99_ms": round(result["p99_us"] / 1000, 1),
         "mean_ms": round(result["mean_us"] / 1000, 1),
         "cpu_ms_per_request": round(cpu / count * 1000, 2),
-        "peak_threads": sampler.threads, "peak_db_connections": sampler.connections,
+        "peak_threads": sampler.threads, "peak_rss_mb": round(sampler.rss / 2**20, 1),
+        "peak_db_connections": sampler.connections,
         "fingerprint": digest, "errors": errors,
         "first_error": f"{errors} wrk errors" if errors else None,
     }
@@ -202,6 +222,8 @@ def main() -> None:
     parser.add_argument("--scenarios", nargs="+", default=list(SCENARIOS),
                         choices=SCENARIOS)
     parser.add_argument("--server-cpus", default="0,1")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="server worker processes (uvicorn --workers, gunicorn --workers)")
     parser.add_argument("--client-cpus", default="2,3")
     parser.add_argument("--output", type=Path,
                         default=Path("benchmarks/results/server-latest.json"))
@@ -218,7 +240,10 @@ def main() -> None:
     env["packages"].update({name: metadata.version(name)
                             for name in ("uvicorn", "uvloop", "httptools", "gunicorn")})
     env.update({"load_generator": wrk_version.strip(), "server_cpus": args.server_cpus,
-                "client_cpus": args.client_cpus, "mode": "server"})
+                "client_cpus": args.client_cpus, "mode": "server", "cpu_model": cpu_model(),
+                "workers": args.workers,
+                # Set by the workflow when it runs the benchmark in a memory-capped cgroup.
+                "memory_limit": os.environ.get("BENCH_MEMORY_LIMIT")})
     results = {"environment": env, "duration": args.duration,
                "pool_size": int(os.environ.get("BENCH_POOL", 20)), "repeat": args.repeat,
                "results": [], "runs": []}
@@ -227,7 +252,7 @@ def main() -> None:
     for round_number in range(1, args.repeat + 1):
         for scenario, concurrency, stack in cases:
             row = {**run_case(stack, scenario, concurrency, args.duration, args.warmup,
-                              args.server_cpus, args.client_cpus),
+                              args.server_cpus, args.client_cpus, args.workers),
                    "round": round_number}
             results["runs"].append(row)
             results["results"] = medians(results["runs"], cases)
@@ -235,10 +260,11 @@ def main() -> None:
             args.output.write_text(json.dumps(results, indent=2) + "\n")
 
     print(f"\nSaved {args.output}\n")
-    print("| " + " | ".join(COLUMNS) + " |")
-    print("|" + "---|" * len(COLUMNS))
+    columns = [*COLUMNS[:-1], "peak_rss_mb", COLUMNS[-1]]
+    print("| " + " | ".join(columns) + " |")
+    print("|" + "---|" * len(columns))
     for row in results["results"]:
-        print("| " + " | ".join(str(row[column]) for column in COLUMNS) + " |")
+        print("| " + " | ".join(str(row[column]) for column in columns) + " |")
     for scenario in args.scenarios:
         fingerprints = {row["fingerprint"] for row in results["runs"]
                         if row["scenario"] == scenario}

@@ -58,5 +58,7 @@ Django app on real Django models. See README.md for the architecture.
 - [x] GitHub Actions workflow: suite on Python 3.12-3.14 x PostgreSQL 14/18 service containers; optional benchmark job.
 - [x] Linux CI is green: Python 3.12/3.13/3.14 x PostgreSQL 14/18 on every push to `main` since 2026-10-28.
 - [x] Real-server benchmark on Linux: `benchmarks/server.py` (uvicorn/gunicorn + wrk, CPU-pinned) and the `server benchmark` workflow; results in `docs/benchmarks.md`.
+- [x] One-core server benchmark with peak memory (2026-10-29): plain asyncdjango leads every stack; asyncdjango.rest_framework trails synchronous DRF by 15-22% on CPU-bound endpoints because its DRF layer costs 17-28% more CPU per request.
+- [ ] Profile and cut the per-request CPU of `asyncdjango.rest_framework` on the read and write endpoints, to at least match synchronous DRF on one core.
 - [x] Support Django 5.2 LTS: the full suite passes on 5.2.18, every adapted function is identical to 6.0.3 apart from comments, and CI runs 5.2 on Python 3.12/PostgreSQL 14 and Python 3.14/PostgreSQL 18.
 - [ ] Define release criteria for 1.0 (a production application running on it in staging). A starting point to decide on: the CRM port's test suite passes; it runs in staging under real traffic for an agreed period without pool exhaustion, cross-tenant reads, or event-loop stalls; CI stays green on every supported Python, Django, and PostgreSQL version; and the public API (`sync_to_native`, settings, `asyncdjango.rest_framework`) is frozen with a deprecation policy.

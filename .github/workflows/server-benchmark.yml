@@ -1,8 +1,8 @@
 name: server benchmark
 
 # Every stack behind a real HTTP server (uvicorn or gunicorn) driven by wrk;
-# see docs/benchmarks.md. One job per scenario: stacks within a job share a
-# machine, so compare rows of the same job only.
+# see docs/benchmarks.md. One job per scenario and machine shape: stacks
+# within a job share a machine, so compare rows of the same job only.
 on:
   workflow_dispatch:
     inputs:
@@ -24,13 +24,24 @@ concurrency:
 
 jobs:
   bench:
-    name: ${{ matrix.scenario }}
+    name: ${{ matrix.scenario }} (${{ matrix.machine }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         scenario: [read, write, slow]
+        # Small VMs: one core, or two cores and 2 GB of memory with a worker
+        # per core. The database stands for a separate host either way.
+        machine: [1-cpu, 2-cpu-2gb]
+        include:
+          - machine: 1-cpu
+            cpus: "0"
+            workers: 1
+          - machine: 2-cpu-2gb
+            cpus: "0,1"
+            workers: 2
+            memory: 2G
     env:
       ASYNCDJANGO_BENCH_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/asyncdjango_bench
       PYTHONUNBUFFERED: "1"
@@ -43,7 +54,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # The runner has 4 vCPUs: PostgreSQL on 3, the server on 0-1, wrk on 2.
+      # The runner has 4 vCPUs: PostgreSQL on 3, the server on 0 or 0-1, wrk on 2.
       - name: Start PostgreSQL
         run: |
           docker run -d --name postgres --cpuset-cpus 3 -p 5432:5432 \
@@ -56,12 +67,23 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[drf,bench-server]" "psycopg[binary]"
 
+      # With a memory limit the whole step runs in a cgroup of that size, without
+      # swap: the server, plus wrk and this script (about 100 MB).
       - name: Benchmark
+        env:
+          BENCH_MEMORY_LIMIT: ${{ matrix.memory }}
         run: |
-          python -m benchmarks.server --scenarios ${{ matrix.scenario }} \
+          limit=()
+          if [ -n "$BENCH_MEMORY_LIMIT" ]; then
+            limit=(sudo systemd-run --scope --quiet -p "MemoryMax=$BENCH_MEMORY_LIMIT"
+                   -p MemorySwapMax=0 -- sudo -u "$USER" env "PATH=$PATH"
+                   "ASYNCDJANGO_BENCH_DATABASE_URL=$ASYNCDJANGO_BENCH_DATABASE_URL"
+                   "BENCH_MEMORY_LIMIT=$BENCH_MEMORY_LIMIT" PYTHONUNBUFFERED=1)
+          fi
+          "${limit[@]}" python -m benchmarks.server --scenarios ${{ matrix.scenario }} \
             --repeat ${{ inputs.repeat || '3' }} --duration 8 --warmup 2 \
-            --server-cpus 0,1 --client-cpus 2 \
-            --output benchmarks/results/server-${{ matrix.scenario }}.json
+            --server-cpus ${{ matrix.cpus }} --workers ${{ matrix.workers }} --client-cpus 2 \
+            --output benchmarks/results/server-${{ matrix.scenario }}-${{ matrix.machine }}.json
 
       # Annotations are readable through the public API without a token.
       - name: Publish results
@@ -69,21 +91,23 @@ jobs:
         run: |
           python - <<'EOF'
           import json, pathlib
-          path = pathlib.Path("benchmarks/results/server-${{ matrix.scenario }}.json")
+          path = pathlib.Path("benchmarks/results/server-${{ matrix.scenario }}-${{ matrix.machine }}.json")
           if path.exists():
               data = json.loads(path.read_text())
-              lines = ["stack,concurrency,round,rps,p50_ms,p99_ms,cpu_ms,threads,db,errors"]
+              lines = ["stack,concurrency,round,rps,p50_ms,p99_ms,cpu_ms,threads,rss_mb,db,errors"]
               for row in data["runs"]:
                   lines.append(",".join(str(row[key]) for key in (
                       "stack", "concurrency", "round", "rps", "p50_ms", "p99_ms",
-                      "cpu_ms_per_request", "peak_threads", "peak_db_connections", "errors")))
+                      "cpu_ms_per_request", "peak_threads", "peak_rss_mb",
+                      "peak_db_connections", "errors")))
               env = data["environment"]
-              title = f"server-bench ${{ matrix.scenario }} ({env['machine']} with {env['cpu_count']} CPUs)"
+              title = (f"server-bench ${{ matrix.scenario }} ${{ matrix.machine }}"
+                       f" ({env['cpu_model']} with {env['cpu_count']} CPUs)")
               print(f"::notice title={title}::" + "%0A".join(lines))
           EOF
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: server-benchmark-${{ matrix.scenario }}
-          path: benchmarks/results/server-${{ matrix.scenario }}.json
+          name: server-benchmark-${{ matrix.scenario }}-${{ matrix.machine }}
+          path: benchmarks/results/server-${{ matrix.scenario }}-${{ matrix.machine }}.json
