@@ -205,8 +205,10 @@ calls blocking libraries (HTTP clients, boto3, synchronous Redis).
 - Synchronous hooks reached from native code (model `save()` overrides,
   signal receivers, DRF auth/permission/throttle classes, serializer fields
   and validators) run **on the event loop**. Database access in them is fine;
-  other blocking I/O stalls the worker. Find it with
-  `asyncdjango.diagnostics.EventLoopBlockDetector`.
+  other blocking I/O stalls the worker. Find it in tests with
+  `asyncdjango.diagnostics.EventLoopBlockDetector`, and in staging or
+  production with `ASYNCDJANGO["STALL_THRESHOLD"]`, which logs each stall
+  with the request and stack ([deployment.md](docs/deployment.md#event-loop-stalls)).
 - Child tasks cannot share an open transaction (`CrossTaskConnectionError`).
 - Only PostgreSQL with psycopg 3 is native. Other aliases raise
   `NativeAsyncUnsupported` unless `ALLOW_SYNC_FALLBACK` is enabled.

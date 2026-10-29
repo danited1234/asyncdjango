@@ -123,6 +123,71 @@ and do not use the native path. Run them as before.
 
 ## Observability
 
+### Event-loop stalls
+
+Every request in a worker shares one event loop, so a blocking call (a
+synchronous HTTP client, password hashing, a large serializer, a slow import)
+delays every other request on that worker. Set a threshold to find them:
+
+```python
+ASYNCDJANGO = {"STALL_THRESHOLD": 0.1}  # seconds
+```
+
+`NativeASGIHandler` then starts a watchdog for its loop. Each stall of at
+least 0.1 s logs one warning on the `asyncdjango.stalls` logger, with its
+length, the request, and the stack of the code that was blocking:
+
+```
+Event loop blocked for 0.312s during GET /api/invoices/; stack while blocked:
+  ...
+  File "invoices/views.py", line 41, in get
+    pdf = render_pdf(invoice)
+  ...
+```
+
+The stack is taken once, when the stall crosses the threshold, so a stall
+made of several blocking calls shows the first. A stall shorter than about a
+quarter of the threshold past it may end before the stack is taken; the
+warning then says so. `asyncdjango.monitoring.stall_stats()` returns the
+running loop's counters (`stalls`, `longest`, `total` seconds) for metrics.
+
+The watchdog is one daemon thread per worker that only reads the heartbeat
+and the loop thread's stack; the loop itself runs a timer every quarter of the
+threshold. Both cost microseconds, so leaving it on in production is fine.
+Route `asyncdjango.stalls` to your error tracker to see stalls in staging.
+
+### Health checks and metrics
+
+```python
+from asyncdjango.views import health, metrics
+
+urlpatterns = [
+    path("internal/health/", health),
+    path("internal/metrics/", metrics),
+]
+```
+
+`health` checks out a connection from each native alias's pool and runs
+`SELECT 1`. It answers 200 with the pool statistics and stall counters, or
+503 when a database is unreachable or every connection stays busy for a
+second (`path(..., health, {"timeout": 2.0})` changes that). Point the load
+balancer's readiness probe at it: a worker that has exhausted its pool stops
+receiving traffic.
+
+`metrics` serves the same numbers in Prometheus' text format:
+`asyncdjango_pool_size`, `asyncdjango_pool_available`,
+`asyncdjango_pool_requests_waiting` (gauges), `asyncdjango_pool_requests_num_total`,
+`asyncdjango_pool_requests_wait_ms_total`, `asyncdjango_pool_requests_errors_total`
+and psycopg_pool's other counters, and `asyncdjango_loop_stalls_total` when the
+stall watchdog is on. Every sample has a `worker` label (the process id).
+
+Both describe the worker process that served the request: with several
+workers, a scrape through the load balancer sees one at random. Scrape each
+worker directly, or treat the numbers as samples. Keep both endpoints off the
+public internet.
+
+### Metrics and tracing
+
 - `asyncdjango.db.pool_stats()` returns psycopg pool counters per alias.
 - `connection.execute_wrapper()` installed from a `connection_created`
   receiver sees every native query (for metrics or tracing).
