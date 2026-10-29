@@ -21,6 +21,7 @@ With `"asyncdjango"` in `INSTALLED_APPS` (and `PATCH_ORM`, the default):
 | `select_for_update()` | Inside `atomic()`, as in Django. |
 | Signal receivers | Synchronous receivers that query run natively; async receivers connected to `post_save` etc. are awaited. |
 | `connection_created`, `connection.execute_wrapper()` | Work per pooled connection checkout (for example, `search_path` multi-tenancy). |
+| `asyncdjango.gather(*calls, limit=4)` | Concurrent ORM calls (coroutines or querysets), each on its own pooled connection, at most `limit` at a time; refused inside `atomic()`. |
 | `sync_to_native(fn)` | Runs any ORM-only synchronous function natively; a replacement for `sync_to_async` around ORM code. |
 | `cursor.copy()` (COPY) | Inside native code, Django's cursor gives psycopg's COPY API (`write`, `write_row`, `read`, `read_row`, `rows`, iteration) with I/O awaited; it joins an open `atomic()` block. Errors are psycopg's, as with Django's own cursor. |
 | `asyncdjango.cache.RedisCache` | Django's Redis cache backend; async methods, and sync methods called from native code, are awaited through `redis.asyncio`. |
