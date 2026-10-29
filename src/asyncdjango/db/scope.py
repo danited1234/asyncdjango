@@ -70,6 +70,12 @@ class NativeScope:
             frame = frame.f_back
         return False
 
+    @property
+    def in_transaction(self) -> bool:
+        """A transactional scope, or one whose connection is in an atomic block."""
+        return self.transactional or any(
+            wrapper.in_atomic_block for wrapper in self.wrappers.values())
+
     def owned_by_current_task(self) -> bool:
         return self.shared or asyncio.current_task() is self.owner
 
@@ -140,7 +146,7 @@ def active_scope() -> NativeScope | None:
         return None
     if scope.owned_by_current_task():
         return scope
-    if scope.transactional:
+    if scope.in_transaction:
         scope.check_owner()
     return None
 

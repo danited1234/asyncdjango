@@ -49,6 +49,36 @@ async def blocking(request):
     return JsonResponse({"ok": True})
 
 
+def _backend_pid():
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_backend_pid()")
+        return cursor.fetchone()[0]
+
+
+async def backend_pids(request):
+    from asyncdjango import gather, sync_to_native
+
+    pids = [await sync_to_native(_backend_pid)() for _ in range(3)]
+    await Organization.objects.acount()
+    pids.append(await sync_to_native(_backend_pid)())
+    gathered = await gather(sync_to_native(_backend_pid)(), sync_to_native(_backend_pid)())
+    return JsonResponse({"pids": pids, "gathered": gathered})
+
+
+async def child_task_in_atomic(request):
+    from asyncdjango.exceptions import CrossTaskConnectionError
+
+    async with transaction.atomic():
+        await Organization.objects.acreate(name="in-atomic")
+        try:
+            await asyncio.create_task(Organization.objects.acount())
+        except CrossTaskConnectionError:
+            return JsonResponse({"refused": True})
+    return JsonResponse({"refused": False})
+
+
 class LazyCountTemplate(SimpleTemplateResponse):
     """A deferred-render response whose rendering queries the database."""
 

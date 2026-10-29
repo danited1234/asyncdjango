@@ -34,7 +34,7 @@ async def gather(*calls: Awaitable[Any] | QuerySet | RawQuerySet, limit: int = 4
         _close(calls)
         raise ValueError("limit must be at least 1")
     scope = active_scope()
-    if scope is not None and scope.transactional and not scope.shared:
+    if scope is not None and scope.in_transaction and not scope.shared:
         _close(calls)
         raise CrossTaskConnectionError(
             "gather() inside transaction.atomic(): its calls would run on other "

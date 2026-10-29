@@ -54,7 +54,7 @@ from . import conf
 from ._threads import run_error_reporting, run_in_request_thread
 from .db.bridge import await_
 from .db.pool import close_pools, open_pools
-from .db.scope import run_native, sync_to_native
+from .db.scope import NativeScope, _current_scope, run_native, sync_to_native
 from .db.transaction import Atomic
 from .middleware import native_middleware_paths
 from .monitoring import watch_event_loop
@@ -107,6 +107,7 @@ class NativeASGIHandler(ASGIHandler):
     def __init__(self) -> None:
         self._native_middleware = native_middleware_paths()
         self._stall_threshold = conf.get("STALL_THRESHOLD")
+        self._connection_per_request = conf.get("CONNECTION_PER_REQUEST")
         super().__init__()
 
     # Startup ---------------------------------------------------------------
@@ -196,7 +197,10 @@ class NativeASGIHandler(ASGIHandler):
             return
 
         async def process_request(request: Any, send: Any) -> Any:
-            response = await self.run_get_response(request)
+            if self._connection_per_request:
+                response = await self._run_in_request_scope(request)
+            else:
+                response = await self.run_get_response(request)
             try:
                 await self.send_response(response, send)
             except asyncio.CancelledError:
@@ -236,6 +240,17 @@ class NativeASGIHandler(ASGIHandler):
         else:
             await self._close_response(response)
         body_file.close()
+
+    async def _run_in_request_scope(self, request: Any) -> Any:
+        # One scope for the request task: its ORM calls share one wrapper and
+        # pooled connection. Child tasks get their own, as without it.
+        scope = NativeScope()
+        token = _current_scope.set(scope)
+        try:
+            return await self.run_get_response(request)
+        finally:
+            _current_scope.reset(token)
+            await scope.aclose_uncancelled()
 
     async def _close_response(self, response: Any) -> None:
         # response.close() sends request_finished, which closes Django's

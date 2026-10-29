@@ -11,6 +11,8 @@ urlpatterns = [
     path("slow/", views.slow_write),
     path("deferred/", views.deferred),
     path("blocking/", views.blocking),
+    path("backend-pids/", views.backend_pids),
+    path("child-task-in-atomic/", views.child_task_in_atomic),
     path("health/", asyncdjango_views.health),
     path("health/quick/", asyncdjango_views.health, {"timeout": 0.2}),
     path("metrics/", asyncdjango_views.metrics),
