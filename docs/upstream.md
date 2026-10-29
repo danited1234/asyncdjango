@@ -53,6 +53,7 @@ file alone.
 | --- | --- |
 | `asgiref.sync.AsyncToSync.loop_thread_executors` | Recognizing an event loop that `async_to_sync()` created for a synchronous caller (`scope.in_sync_caller_loop()`). asgiref registers each such loop there for the duration of the call. |
 | `django.core.cache.backends.redis.RedisCacheClient` (`_servers`, `_pool_options`, `_get_connection_pool_index()`, `get_client()`) and `RedisCache._class` | `asyncdjango.cache` subclasses Django's Redis backend and only swaps the client that `get_client()` returns inside native code. |
+| `BaseDatabaseWrapper._commit()`, `_rollback()`, `_savepoint_rollback()` | `SESSION_SQL` wraps them on each connection (from `connection_created`) to learn when a `SET` sent inside a transaction was kept or undone. |
 | `psycopg_pool.AsyncConnectionPool` shutdown order | `close()` waits for the pool's worker tasks before closing idle connections; under `asyncio.run()` shutdown those workers are already cancelled, so `pool._close_at_shutdown()` closes every connection the pool opened itself (tracked from the `configure` callback). |
 
 `NativeASGIHandler.load_middleware()` also swaps

@@ -108,8 +108,10 @@ connection instead.
 - Connection settings come from `DATABASES`; use `OPTIONS` for TLS
   (`sslmode="verify-full"`, `sslrootcert=...`). Credentials are not logged.
 - `SET ROLE` (`OPTIONS["assume_role"]`) and other session state persist on
-  pooled connections. Do not change roles or `search_path` per request
-  without resetting them on every checkout.
+  pooled connections. Set per-request state such as a tenant's `search_path`
+  through `ASYNCDJANGO["SESSION_SQL"]` (see
+  [guide.md](guide.md#per-request-session-state)), which re-applies it
+  whenever a connection's state differs, including after a rollback.
 - The pool limit is also a protection: a flood of slow requests queues for
   connections instead of exhausting PostgreSQL. Pair it with server-side
   `statement_timeout` and an HTTP-level timeout.

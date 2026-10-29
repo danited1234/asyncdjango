@@ -32,6 +32,10 @@ DEFAULTS: dict[str, Any] = {
     # Log a warning with a stack trace whenever the event loop is blocked for
     # this many seconds (asyncdjango.monitoring). None: off.
     "STALL_THRESHOLD": None,
+    # Dotted path to a function(connection) returning SQL that sets the
+    # session state a query needs (search_path for a tenant), or None. Run
+    # only when the pooled connection's state differs (asyncdjango.db.session).
+    "SESSION_SQL": None,
 }
 
 
