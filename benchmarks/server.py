@@ -102,7 +102,7 @@ def cpu_seconds(pid: int) -> float:
 
 
 class Sampler(threading.Thread):
-    """Peak threads of the server's processes and peak database connections."""
+    """Peak threads and memory of the server's processes, and peak database connections."""
 
     def __init__(self, pid: int) -> None:
         super().__init__(daemon=True)
@@ -116,15 +116,19 @@ class Sampler(threading.Thread):
                                           autocommit=True)
         self.stopping = threading.Event()
         self.threads = 0
+        self.rss = 0
         self.connections = 0
 
     def run(self) -> None:
         while not self.stopping.is_set():
             try:
-                threads = sum(process.num_threads() for process in process_tree(self.pid))
+                processes = process_tree(self.pid)
+                threads = sum(process.num_threads() for process in processes)
+                rss = sum(process.memory_info().rss for process in processes)
             except psutil.NoSuchProcess:
-                threads = 0
+                threads = rss = 0
             self.threads = max(self.threads, threads)
+            self.rss = max(self.rss, rss)
             count = self.connection.execute(
                 "SELECT count(*) FROM pg_stat_activity WHERE datname = %s",
                 [self.database]).fetchone()[0]
@@ -185,7 +189,8 @@ def run_case(stack: str, scenario: str, concurrency: int, duration: float, warmu
         "p99_ms": round(result["p99_us"] / 1000, 1),
         "mean_ms": round(result["mean_us"] / 1000, 1),
         "cpu_ms_per_request": round(cpu / count * 1000, 2),
-        "peak_threads": sampler.threads, "peak_db_connections": sampler.connections,
+        "peak_threads": sampler.threads, "peak_rss_mb": round(sampler.rss / 2**20, 1),
+        "peak_db_connections": sampler.connections,
         "fingerprint": digest, "errors": errors,
         "first_error": f"{errors} wrk errors" if errors else None,
     }
@@ -235,10 +240,11 @@ def main() -> None:
             args.output.write_text(json.dumps(results, indent=2) + "\n")
 
     print(f"\nSaved {args.output}\n")
-    print("| " + " | ".join(COLUMNS) + " |")
-    print("|" + "---|" * len(COLUMNS))
+    columns = [*COLUMNS[:-1], "peak_rss_mb", COLUMNS[-1]]
+    print("| " + " | ".join(columns) + " |")
+    print("|" + "---|" * len(columns))
     for row in results["results"]:
-        print("| " + " | ".join(str(row[column]) for column in COLUMNS) + " |")
+        print("| " + " | ".join(str(row[column]) for column in columns) + " |")
     for scenario in args.scenarios:
         fingerprints = {row["fingerprint"] for row in results["runs"]
                         if row["scenario"] == scenario}
