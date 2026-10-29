@@ -12,7 +12,6 @@ This is the same technique SQLAlchemy uses for its asyncio extension.
 
 from __future__ import annotations
 
-import contextvars
 import sys
 import types
 from collections.abc import Awaitable, Callable
@@ -58,8 +57,7 @@ def await_now(awaitable: Awaitable[T]) -> T:
 
     They are started in the greenlet, and only switch to the event loop if
     they do wait: fetching rows a client-side cursor already received, or
-    closing it. Not for code that sets context variables: its first part runs
-    in the greenlet's context and the rest in the task's.
+    closing it.
     """
     if not isinstance(greenlet.getcurrent(), _NativeGreenlet):
         return await_(awaitable)
@@ -97,47 +95,26 @@ def _resume(iterator: Any, waiting_on: Any) -> Any:
                 return stop.value
 
 
-_MISSING = object()
-
-
-def _pull(context: contextvars.Context) -> None:
-    """Apply context variables the greenlet changed to the running task."""
-    for var, value in context.items():
-        if var.get(_MISSING) is not value:
-            var.set(value)
-
-
-def _push(context: contextvars.Context) -> None:
-    """Apply context variables the awaited code changed to the greenlet."""
-    for var, value in contextvars.copy_context().items():
-        if context.get(var, _MISSING) is not value:
-            context.run(var.set, value)
-
-
 async def greenlet_spawn(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """Run ``fn`` on this thread, awaiting each I/O step it yields.
 
-    Context variables behave as if ``fn`` ran in the calling task: values the
-    synchronous code sets (``translation.activate()``, logging context) are
-    visible to coroutines it awaits and to the caller afterwards, as with
-    asgiref's ``sync_to_async``.
+    ``fn`` runs in the calling task's own context (not a copy), so context
+    variables behave as if it ran in the task: values the synchronous code
+    sets (``translation.activate()``, logging context) are visible to the
+    coroutines it awaits and to the caller afterwards, as with asgiref's
+    ``sync_to_async``.
     """
-    glet = _NativeGreenlet(fn, greenlet.getcurrent())
-    context = glet.gr_context = contextvars.copy_context()
-    try:
-        result: Any = glet.switch(*args, **kwargs)
-        while not glet.dead:
-            _pull(context)
-            try:
-                value = await result
-            except BaseException:
-                # Includes CancelledError: raise it inside the ORM code so its
-                # cleanup (for example transaction rollback) runs before leaving.
-                _push(context)
-                result = glet.throw(*sys.exc_info())
-            else:
-                _push(context)
-                result = glet.switch(value)
-    finally:
-        _pull(context)
+    driver = greenlet.getcurrent()
+    glet = _NativeGreenlet(fn, driver)
+    glet.gr_context = driver.gr_context
+    result: Any = glet.switch(*args, **kwargs)
+    while not glet.dead:
+        try:
+            value = await result
+        except BaseException:
+            # Includes CancelledError: raise it inside the ORM code so its
+            # cleanup (for example transaction rollback) runs before leaving.
+            result = glet.throw(*sys.exc_info())
+        else:
+            result = glet.switch(value)
     return result
